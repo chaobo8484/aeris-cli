@@ -1,10 +1,14 @@
 import http from 'node:http';
 import https from 'node:https';
 import { Message } from '../../cli/ConversationManager.js';
-import { AdapterRuntimeConfig, LLMAdapter } from './types.js';
+import { AdapterDiscoveryConfig, AdapterRuntimeConfig, LLMAdapter } from './types.js';
 
 type ClaudeResponse = {
   content?: Array<{ type?: string; text?: string }>;
+};
+
+type ClaudeModelsPayload = {
+  data?: Array<{ id?: string }>;
 };
 
 type HttpResponseLike = {
@@ -80,8 +84,52 @@ export class ClaudeAdapter implements LLMAdapter {
     return text;
   }
 
+  async listModels(config: AdapterDiscoveryConfig): Promise<string[]> {
+    const url = `${this.resolveBaseUrl(config.baseUrl)}/models`;
+    const response = await this.getJson(url, {
+      'x-api-key': config.apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    });
+    const raw = await response.text();
+
+    if (!response.ok) {
+      const preview = raw.slice(0, 300);
+      throw new Error(`Failed to fetch Claude models (${response.status}) from ${url}: ${preview}`);
+    }
+
+    const payload = raw ? (JSON.parse(raw) as ClaudeModelsPayload) : {};
+    const models = (payload.data ?? [])
+      .map((item) => item.id?.trim())
+      .filter((item): item is string => Boolean(item));
+
+    if (models.length === 0) {
+      throw new Error('Claude model list response did not contain any model IDs.');
+    }
+
+    return models;
+  }
+
   private resolveBaseUrl(customBaseUrl?: string): string {
     return (customBaseUrl?.trim() || this.defaultBaseUrl).replace(/\/+$/, '');
+  }
+
+  private async getJson(url: string, headers: Record<string, string>): Promise<HttpResponseLike> {
+    if (typeof fetch === 'function') {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers,
+      });
+
+      return {
+        ok: response.ok,
+        status: response.status,
+        text: () => response.text(),
+        json: <T>() => response.json() as Promise<T>,
+      };
+    }
+
+    return this.getJsonWithNodeHttp(url, headers);
   }
 
   private async postJson(url: string, payload: unknown, headers: Record<string, string>): Promise<HttpResponseLike> {
@@ -151,6 +199,45 @@ export class ClaudeAdapter implements LLMAdapter {
     };
   }
 
+  private async getJsonWithNodeHttp(url: string, headers: Record<string, string>): Promise<HttpResponseLike> {
+    const target = new URL(url);
+    const isHttps = target.protocol === 'https:';
+    const client = isHttps ? https : http;
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = client.request(
+        {
+          protocol: target.protocol,
+          hostname: target.hostname,
+          port: target.port || undefined,
+          path: `${target.pathname}${target.search}`,
+          method: 'GET',
+          headers,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+          res.on('end', () => {
+            resolve({
+              status: res.statusCode ?? 500,
+              body: Buffer.concat(chunks).toString('utf8'),
+            });
+          });
+        }
+      );
+
+      req.on('error', reject);
+      req.end();
+    });
+
+    return {
+      ok: result.status >= 200 && result.status < 300,
+      status: result.status,
+      text: async () => result.body,
+      json: async <T>() => JSON.parse(result.body) as T,
+    };
+  }
+
   private formatClaudeError(status: number, errorText: string, model: string): string {
     const normalized = errorText.toLowerCase();
 
@@ -159,11 +246,13 @@ export class ClaudeAdapter implements LLMAdapter {
     }
 
     if (
+      normalized.includes('model_not_found') ||
+      normalized.includes('no available channel') ||
       normalized.includes('not_found_error') ||
       normalized.includes('invalid model') ||
       (normalized.includes('model') && normalized.includes('not found'))
     ) {
-      return `Model unavailable: ${model}. Please verify the model name in /modelconfig. Raw error: ${errorText}`;
+      return `Model unavailable: ${model}. Please verify the model name in .env or via /model. Raw error: ${errorText}`;
     }
 
     if (status === 429) {

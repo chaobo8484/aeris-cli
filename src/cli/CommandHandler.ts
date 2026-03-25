@@ -205,9 +205,8 @@ export class CommandHandler {
   private uiRenderer: UIRenderer;
   private commandRegistry: CommandRegistry;
   private configStore: ConfigStore;
-  private onConfigStart: () => Promise<void>;
-  private onApiKeySwitch: (args: string[]) => Promise<void>;
   private onModelSwitch: (args: string[]) => Promise<void>;
+  private onProviderSwitch: (args: string[]) => Promise<void>;
   private onCommandDataGenerated: (command: string, data: string) => void;
   private onProjectContextControl: (args: string[]) => Promise<void>;
   private onTrustCurrentPath: () => Promise<void>;
@@ -221,9 +220,8 @@ export class CommandHandler {
     conversationManager: ConversationManager,
     uiRenderer: UIRenderer,
     commandRegistry: CommandRegistry,
-    onConfigStart: () => Promise<void>,
-    onApiKeySwitch: (args: string[]) => Promise<void>,
     onModelSwitch: (args: string[]) => Promise<void>,
+    onProviderSwitch: (args: string[]) => Promise<void>,
     onCommandDataGenerated: (command: string, data: string) => void,
     onProjectContextControl: (args: string[]) => Promise<void>,
     onTrustCurrentPath: () => Promise<void>,
@@ -232,9 +230,8 @@ export class CommandHandler {
     this.conversationManager = conversationManager;
     this.uiRenderer = uiRenderer;
     this.commandRegistry = commandRegistry;
-    this.onConfigStart = onConfigStart;
-    this.onApiKeySwitch = onApiKeySwitch;
     this.onModelSwitch = onModelSwitch;
+    this.onProviderSwitch = onProviderSwitch;
     this.onCommandDataGenerated = onCommandDataGenerated;
     this.onProjectContextControl = onProjectContextControl;
     this.onTrustCurrentPath = onTrustCurrentPath;
@@ -294,12 +291,11 @@ export class CommandHandler {
       case 'export':
         this.exportConversation(args);
         break;
-      case 'apikey':
-      case 'setkey':
-        await this.onApiKeySwitch(args);
-        break;
       case 'model':
         await this.onModelSwitch(args);
+        break;
+      case 'provider':
+        await this.onProviderSwitch(args);
         break;
       case 'projectcontext':
       case 'projectctx':
@@ -312,9 +308,6 @@ export class CommandHandler {
       case 'trustcheck':
       case 'truststatus':
         await this.onTrustCheckCurrentPath();
-        break;
-      case 'modelconfig':
-        await this.onConfigStart();
         break;
       case 'skills':
       case 'scan_skills':
@@ -3498,7 +3491,7 @@ export class CommandHandler {
     let model = 'unknown';
     try {
       const config = await this.configStore.getConfig();
-      model = config.providers.claude?.model?.trim() || 'unknown';
+      model = config.providers[config.activeProvider]?.model?.trim() || 'unknown';
     } catch {
       model = 'unknown';
     }

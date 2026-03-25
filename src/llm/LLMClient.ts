@@ -4,6 +4,7 @@ import { estimateTokenCount } from '../cli/tokenEstimate.js';
 import { createDefaultAdapters } from './adapters/createDefaultAdapters.js';
 import { AdapterRuntimeConfig, LLMAdapter } from './adapters/types.js';
 import { ProjectContextBuilder } from './ProjectContextBuilder.js';
+import { getProviderMeta } from '../config/providerCatalog.js';
 
 export interface GeneratedReply {
   content: string;
@@ -12,7 +13,7 @@ export interface GeneratedReply {
 
 export class LLMClient {
   private readonly configStore: ConfigStore;
-  private readonly adapter: LLMAdapter;
+  private readonly adapters: Map<LLMAdapter['provider'], LLMAdapter>;
   private readonly projectContextBuilder: ProjectContextBuilder;
   private readonly commandDataContextProvider?: () => string;
 
@@ -22,27 +23,32 @@ export class LLMClient {
     commandDataContextProvider?: () => string
   ) {
     this.configStore = configStore;
-    const claudeAdapter = adapters.find((item) => item.provider === 'claude');
-    if (!claudeAdapter) {
-      throw new Error('Claude adapter not found.');
-    }
-    this.adapter = claudeAdapter;
+    this.adapters = new Map(adapters.map((item) => [item.provider, item]));
     this.projectContextBuilder = new ProjectContextBuilder();
     this.commandDataContextProvider = commandDataContextProvider;
   }
 
   async generateReply(messages: Message[]): Promise<GeneratedReply> {
     const config = await this.configStore.getConfig();
-    const providerConfig = config.providers.claude;
+    const provider = config.activeProvider;
+    const providerMeta = getProviderMeta(provider);
+    const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      throw new Error(`${providerMeta.displayName} adapter not found.`);
+    }
+
+    const providerConfig = config.providers[provider];
     const apiKey = providerConfig?.apiKey?.trim();
     const model = providerConfig?.model?.trim();
 
     if (!apiKey) {
-      throw new Error('Claude API key is not configured. Set AERIS_CLAUDE_API_KEY or run /modelconfig first.');
+      throw new Error(
+        `${providerMeta.displayName} API key is not configured. Set ${providerMeta.envKeys.apiKey.join(' / ')} in .env and restart the CLI.`
+      );
     }
 
     if (!model) {
-      throw new Error('Claude model is not configured. Run /modelconfig or /model <model-name> first.');
+      throw new Error(`${providerMeta.displayName} model is not configured. Set it in .env or use /model <model-name>.`);
     }
 
     const runtimeConfig: AdapterRuntimeConfig = {
@@ -54,7 +60,7 @@ export class LLMClient {
     const latestUserQuery = latestUserMessage?.content?.trim() ?? '';
     const projectContext = await this.withProjectContext(messages, config.projectContextEnabled, latestUserQuery);
     const requestMessages = this.withCommandDataContext(projectContext.messages, latestUserQuery);
-    const content = await this.adapter.generateReply(requestMessages, runtimeConfig);
+    const content = await adapter.generateReply(requestMessages, runtimeConfig);
     return {
       content,
       appendix: projectContext.appendix,

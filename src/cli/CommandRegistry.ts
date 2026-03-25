@@ -27,6 +27,11 @@ export class CommandRegistry {
       usage: '/model [model-name|clear]',
     });
     this.register({
+      name: 'provider',
+      description: 'Switch the active LLM provider',
+      usage: '/provider [claude|openrouter]',
+    });
+    this.register({
       name: 'trustpath',
       description: 'Trust the current working directory',
       aliases: ['trust'],
@@ -37,17 +42,6 @@ export class CommandRegistry {
       description: 'Quickly check whether current directory is trusted',
       aliases: ['truststatus'],
       usage: '/trustcheck',
-    });
-    this.register({
-      name: 'modelconfig',
-      description: 'Configure Claude API settings (API Key / Base URL / Model)',
-      usage: '/modelconfig',
-    });
-    this.register({
-      name: 'apikey',
-      description: 'Set Claude API key locally without network dependency',
-      aliases: ['setkey'],
-      usage: '/apikey [your-api-key|clear]',
     });
     this.register({
       name: 'skills',

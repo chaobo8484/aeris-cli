@@ -16,7 +16,8 @@ A CLI tool to analyze, improve, and diagnose Claude Code / Agent workflows.
 - Interactive terminal chat
 - `/` command hints, arrow-key navigation, `Tab` completion
 - Conversation history with fold / unfold
-- Claude model settings, local API key management, model switching
+- Multi-provider chat with Claude and OpenRouter
+- Provider/model settings, local API key management, model switching
 - Trust check for the current working directory
 - Scan project Prompt / Rules / Agent assets
 - Claude JSONL token analysis and context health checks
@@ -49,12 +50,25 @@ PowerShell:
 Copy-Item .env.example .env
 ```
 
-2. Set your Claude API values
+2. Set your provider values
+
+Claude example:
 
 ```env
+AERIS_ACTIVE_PROVIDER=claude
 AERIS_CLAUDE_API_KEY=your_api_key
 AERIS_CLAUDE_BASE_URL=https://api.anthropic.com/v1
 AERIS_CLAUDE_MODEL=your_claude_model
+AERIS_PROJECT_CONTEXT_ENABLED=true
+```
+
+OpenRouter example:
+
+```env
+AERIS_ACTIVE_PROVIDER=openrouter
+AERIS_OPENROUTER_API_KEY=your_openrouter_api_key
+AERIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+AERIS_OPENROUTER_MODEL=provider/model-name
 AERIS_PROJECT_CONTEXT_ENABLED=true
 ```
 
@@ -64,7 +78,7 @@ AERIS_PROJECT_CONTEXT_ENABLED=true
 npm run dev
 ```
 
-You can also persist settings via `/modelconfig` inside the CLI.
+Provider API settings come from `.env`. Inside the CLI, use `/provider` to switch provider and `/model` to switch the current session model.
 
 **Windows config path:**
 
@@ -74,20 +88,25 @@ You can also persist settings via `/modelconfig` inside the CLI.
 
 **Precedence (highest first):**
 
-1. System env / `.env`
-2. Local config file (`/modelconfig`)
+1. Session model override from `/model`
+2. System env / `.env`
 3. Built-in defaults
 
 **Environment variables:**
 
 | Variable | Purpose |
 |----------|---------|
+| `AERIS_ACTIVE_PROVIDER` | Active runtime provider (`claude` or `openrouter`) |
 | `AERIS_CLAUDE_API_KEY` | Claude API key |
 | `AERIS_CLAUDE_BASE_URL` | API base URL |
 | `AERIS_CLAUDE_MODEL` | Model name |
+| `AERIS_OPENROUTER_API_KEY` | OpenRouter API key |
+| `AERIS_OPENROUTER_BASE_URL` | OpenRouter API base URL |
+| `AERIS_OPENROUTER_MODEL` | OpenRouter default model |
 | `AERIS_PROJECT_CONTEXT_ENABLED` | Toggle project context |
 | `ANTHROPIC_API_KEY` | Anthropic-compatible key |
 | `ANTHROPIC_BASE_URL` | Anthropic-compatible base URL |
+| `OPENROUTER_API_KEY` | OpenRouter fallback key name |
 
 ## Scripts
 
@@ -97,7 +116,7 @@ npm run build  # production build
 npm start      # run built app
 ```
 
-On first launch, Aeris asks whether to trust the current working directory. After that, use `/modelconfig`, `/apikey`, and `/model` to adjust runtime settings.
+On first launch, Aeris asks whether to trust the current working directory. After that, use `.env` for provider settings, `/provider` to switch the active provider, and `/model` to switch the current session model.
 
 ## CLI commands
 
@@ -109,9 +128,8 @@ On first launch, Aeris asks whether to trust the current working directory. Afte
 | `/collapse [id or all]` | Collapse messages |
 | `/expand [id or all]` | Expand messages |
 | `/exit` / `/quit` | Exit |
-| `/modelconfig` | Configure Claude API |
-| `/apikey [key or clear]` | Set or clear local API key |
-| `/model [name]` | Switch model |
+| `/provider [claude\|openrouter]` | Switch active provider |
+| `/model [name]` | Switch model for the active provider |
 | `/trustpath` | Trust current directory |
 | `/trustcheck` | Check trust status |
 | `/projectcontext [on, off, or status]` | Project context injection |
@@ -142,5 +160,5 @@ Before publishing:
 
 - Do not commit `.env`
 - Ensure `dist/` is built
-- Inject API keys via env or local config only
+- Inject API keys via env only
 - Verify `npm pack --dry-run` includes only intended files

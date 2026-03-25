@@ -1,5 +1,6 @@
 export interface MessageRenderMetadata {
   appendix?: string;
+  modelLabel?: string;
 }
 
 export interface Message {

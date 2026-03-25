@@ -1,21 +1,17 @@
 ﻿import readline from 'readline';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import boxen from 'boxen';
 import { ConversationManager } from './ConversationManager.js';
 import { CommandHandler } from './CommandHandler.js';
 import { UIRenderer } from './UIRenderer.js';
 import { CommandRegistry } from './CommandRegistry.js';
 import { AutoCompleter } from './AutoCompleter.js';
 import { Spinner } from './Spinner.js';
-import { ConfigDiagnostics, ConfigStore, ProviderConfig, ProviderConfigSources } from './ConfigStore.js';
+import { ConfigDiagnostics, ConfigStore, ProviderConfigSources } from './ConfigStore.js';
+import { getProviderMeta, ProviderName, PROVIDER_NAMES } from '../config/providerCatalog.js';
 import { LLMClient } from '../llm/LLMClient.js';
 import { createDefaultAdapters } from '../llm/adapters/createDefaultAdapters.js';
-
-const CLAUDE_META = {
-  displayName: 'Claude',
-  defaultBaseUrl: 'https://api.anthropic.com/v1',
-};
+import { LLMAdapter } from '../llm/adapters/types.js';
 
 export class CLI {
   private rl: readline.Interface;
@@ -31,6 +27,7 @@ export class CLI {
   private readonly homeAccent = chalk.hex('#CC7D5E');
   private configStore: ConfigStore;
   private llmClient: LLMClient;
+  private readonly adaptersByProvider: Map<ProviderName, LLMAdapter>;
   private isInteractiveCommandActive = false;
   private commandDataHistory: Array<{ timestamp: Date; command: string; data: string }> = [];
   private isLineProcessing = false;
@@ -85,15 +82,16 @@ export class CLI {
     this.conversationManager = new ConversationManager();
     this.uiRenderer = new UIRenderer(this.conversationManager);
     this.configStore = new ConfigStore();
-    this.llmClient = new LLMClient(this.configStore, createDefaultAdapters(), this.buildCommandDataContext.bind(this));
+    const adapters = createDefaultAdapters();
+    this.adaptersByProvider = new Map(adapters.map((adapter) => [adapter.provider, adapter]));
+    this.llmClient = new LLMClient(this.configStore, adapters, this.buildCommandDataContext.bind(this));
 
     this.commandHandler = new CommandHandler(
       this.conversationManager,
       this.uiRenderer,
       this.commandRegistry,
-      this.startConfigFlow.bind(this),
-      this.handleApiKeySwitch.bind(this),
       this.startModelSwitchFlow.bind(this),
+      this.handleProviderSwitch.bind(this),
       this.recordCommandData.bind(this),
       this.handleProjectContextCommand.bind(this),
       this.trustCurrentPath.bind(this),
@@ -153,7 +151,7 @@ export class CLI {
     this.promptVisibleLines = 0;
     console.log('');
     console.log(chalk.bold('  Aeris'));
-    console.log(chalk.dim('  Internal Build: v0.0.2_3'));
+    console.log(chalk.dim('  Internal Build: v0.0.3_0'));
     console.log('');
     await this.renderHomeConfigStatus();
     await this.renderHomeProjectContextStatus();
@@ -174,45 +172,47 @@ export class CLI {
     try {
       const config = await this.configStore.getConfig();
       const diagnostics = await this.configStore.getConfigDiagnostics();
-      const claudeConfig = config.providers.claude ?? {};
-      const apiKey = claudeConfig.apiKey?.trim();
-      const currentModel = claudeConfig.model?.trim();
-      const currentBaseUrl = claudeConfig.baseUrl?.trim() || CLAUDE_META.defaultBaseUrl;
-      const sourceSummary = this.summarizeProviderConfigSource(diagnostics.providerSources.claude);
+      const activeProvider = config.activeProvider;
+      const providerMeta = getProviderMeta(activeProvider);
+      const providerConfig = config.providers[activeProvider] ?? {};
+      const apiKey = providerConfig.apiKey?.trim();
+      const currentModel = providerConfig.model?.trim();
+      const currentBaseUrl = providerConfig.baseUrl?.trim() || providerMeta.defaultBaseUrl;
+      const sourceSummary = this.summarizeProviderConfigSource(diagnostics.providerSources[activeProvider]);
 
       if (apiKey && currentModel) {
         console.log(chalk.green('  Model Config: ready'));
+        console.log(chalk.dim('  Active provider: ') + this.homeAccent(providerMeta.displayName));
         console.log(chalk.dim('  Config source: ') + this.homeAccent(sourceSummary));
         console.log(chalk.dim('  Current model: ') + this.homeAccent(currentModel));
         console.log(chalk.dim('  Base URL: ') + this.homeAccent(currentBaseUrl));
-        this.renderEnvironmentStatusLines(diagnostics);
+        this.renderEnvironmentStatusLines(diagnostics, activeProvider);
         return;
       }
 
       console.log(chalk.yellow('  Model Config: incomplete'));
+      console.log(chalk.dim('  Active provider: ') + this.homeAccent(providerMeta.displayName));
       if (!apiKey) {
         console.log(
           chalk.dim('  Set ') +
-            this.homeAccent('AERIS_CLAUDE_API_KEY') +
-            chalk.dim(' or run ') +
-            this.homeAccent('/modelconfig') +
-            chalk.dim(' to finish setup')
+            this.homeAccent(providerMeta.envKeys.apiKey.join(' / ')) +
+            chalk.dim(' in .env to finish setup')
         );
       }
       if (!currentModel) {
         console.log(
           chalk.dim('  Set ') +
-            this.homeAccent('AERIS_CLAUDE_MODEL') +
+            this.homeAccent(providerMeta.envKeys.model.join(' / ')) +
             chalk.dim(' or run ') +
             this.homeAccent('/model <model-name>') +
             chalk.dim(' to finish setup')
         );
       }
       console.log(chalk.dim('  Current Base URL: ') + this.homeAccent(currentBaseUrl));
-      this.renderEnvironmentStatusLines(diagnostics);
+      this.renderEnvironmentStatusLines(diagnostics, activeProvider);
     } catch {
       console.log(chalk.red('  Failed to read model configuration state'));
-      console.log(chalk.dim('  Run ') + this.homeAccent('/modelconfig') + chalk.dim(' to configure again'));
+      console.log(chalk.dim('  Check your .env and restart the CLI'));
     }
   }
 
@@ -551,10 +551,18 @@ export class CLI {
     try {
       const response = await this.llmClient.generateReply(this.conversationManager.getMessages());
       spinner.stop();
+      const config = await this.configStore.getConfig();
+      const activeProvider = config.activeProvider;
+      const modelLabel = config.providers[activeProvider]?.model?.trim();
       this.conversationManager.addMessage(
         'assistant',
         response.content,
-        response.appendix ? { appendix: response.appendix } : undefined
+        response.appendix || modelLabel
+          ? {
+              ...(response.appendix ? { appendix: response.appendix } : {}),
+              ...(modelLabel ? { modelLabel } : {}),
+            }
+          : undefined
       );
       this.uiRenderer.renderLastMessage();
     } catch (error) {
@@ -572,9 +580,6 @@ export class CLI {
 
     const [command, ...rest] = trimmed.slice(1).split(/\s+/);
     const normalizedCommand = command?.toLowerCase() || '';
-    if ((normalizedCommand === 'apikey' || normalizedCommand === 'setkey') && rest.length > 0) {
-      return `/${command} ********`;
-    }
 
     return input;
   }
@@ -623,227 +628,78 @@ export class CLI {
     return `Command data history:\n...(truncated)\n${merged.slice(merged.length - maxChars)}`;
   }
 
-  private async startConfigFlow(): Promise<void> {
-    this.isInteractiveCommandActive = true;
-    this.clearSuggestions();
+  private async handleProviderSwitch(args: string[]): Promise<void> {
+    const invokedCommand = args.length > 0 ? `/provider ${args.join(' ')}` : '/provider';
 
     try {
-      const config = await this.configStore.getStoredConfig();
+      const config = await this.configStore.getConfig();
       const diagnostics = await this.configStore.getConfigDiagnostics();
-      const current = config.providers.claude ?? {};
+      const currentProvider = config.activeProvider;
+      let targetProvider: ProviderName | undefined;
 
-      await this.renderConfigHeader(diagnostics);
-      this.renderClaudeSnapshot(current);
-      this.renderEnvironmentStatusLines(diagnostics);
-
-      const update: ProviderConfig = {};
-
-      this.renderConfigStep('Step 1/3', 'API key');
-      if (current.apiKey?.trim()) {
-        const { apiKeyMode } = await inquirer.prompt<{ apiKeyMode: 'keep' | 'update' | 'clear' }>([
-          {
-            type: 'list',
-            name: 'apiKeyMode',
-            message: 'How should we handle the API key?',
-            choices: [
-              { name: 'Keep current key', value: 'keep' },
-              { name: 'Update API key', value: 'update' },
-              { name: 'Clear API key', value: 'clear' },
-            ],
-          },
-        ]);
-
-        if (apiKeyMode === 'keep') {
-          await this.showWelcome();
-          this.uiRenderer.renderCommandInvocation('/modelconfig');
-          this.uiRenderer.renderCommandResult('No config changes made');
-          this.recordCommandData('modelconfig', 'No config changes made');
-          return;
-        } else if (apiKeyMode === 'update') {
-          const { apiKey } = await inquirer.prompt<{ apiKey: string }>([
-            {
-              type: 'password',
-              name: 'apiKey',
-              message: 'Enter new API key',
-              mask: '*',
-              validate: (value: string) => Boolean(value.trim()) || 'API key cannot be empty',
-            },
-          ]);
-          update.apiKey = apiKey.trim();
-        } else if (apiKeyMode === 'clear') {
-          update.apiKey = undefined;
-        }
-      } else {
-        const { apiKey } = await inquirer.prompt<{ apiKey: string }>([
-          {
-            type: 'password',
-            name: 'apiKey',
-            message: 'Enter Claude API key (optional, can be configured later)',
-            mask: '*',
-          },
-        ]);
-        if (apiKey.trim()) {
-          update.apiKey = apiKey.trim();
-        }
-      }
-
-      this.renderConfigStep('Step 2/3', 'Base URL');
-      const currentBaseUrl = current.baseUrl?.trim();
-      if (currentBaseUrl) {
-        const { baseUrlMode } = await inquirer.prompt<{ baseUrlMode: 'keep' | 'update' | 'default' }>([
-          {
-            type: 'list',
-            name: 'baseUrlMode',
-            message: `Current Base URL: ${currentBaseUrl}. What do you want to do?`,
-            choices: [
-              { name: 'Keep current Base URL', value: 'keep' },
-              { name: 'Update Base URL', value: 'update' },
-              { name: `Reset to default (${CLAUDE_META.defaultBaseUrl})`, value: 'default' },
-            ],
-            default: 'keep',
-          },
-        ]);
-
-        if (baseUrlMode === 'update') {
-          const { baseUrl } = await inquirer.prompt<{ baseUrl: string }>([
-            {
-              type: 'input',
-              name: 'baseUrl',
-              message: 'Enter custom Base URL',
-              default: currentBaseUrl,
-              validate: (value: string) => Boolean(value.trim()) || 'Base URL cannot be empty',
-            },
-          ]);
-          update.baseUrl = baseUrl.trim();
-        } else if (baseUrlMode === 'default') {
-          update.baseUrl = undefined;
-        }
-      } else {
-        const { useCustomBaseUrl } = await inquirer.prompt<{ useCustomBaseUrl: boolean }>([
-          {
-            type: 'confirm',
-            name: 'useCustomBaseUrl',
-            message: `Use a custom Base URL? (default: ${CLAUDE_META.defaultBaseUrl})`,
-            default: false,
-          },
-        ]);
-
-        if (useCustomBaseUrl) {
-          const { baseUrl } = await inquirer.prompt<{ baseUrl: string }>([
-            {
-              type: 'input',
-              name: 'baseUrl',
-              message: 'Enter custom Base URL',
-              default: CLAUDE_META.defaultBaseUrl,
-              validate: (value: string) => Boolean(value.trim()) || 'Base URL cannot be empty',
-            },
-          ]);
-          update.baseUrl = baseUrl.trim();
-        }
-      }
-
-      this.renderConfigStep('Step 3/3', 'Model name');
-      const { model } = await inquirer.prompt<{ model: string }>([
-        {
-          type: 'input',
-          name: 'model',
-          message: 'Enter Claude model name',
-          default: current.model?.trim() || '',
-          validate: (value: string) => Boolean(value.trim()) || 'Model name cannot be empty',
-        },
-      ]);
-      update.model = model.trim();
-
-      await this.configStore.setProviderConfig('claude', update);
-      await this.configStore.setActiveProvider('claude');
-
-      const resolveNext = <K extends keyof ProviderConfig>(key: K): ProviderConfig[K] => {
-        return Object.prototype.hasOwnProperty.call(update, key) ? update[key] : current[key];
-      };
-
-      this.renderConfigSummary({
-        apiKey: resolveNext('apiKey'),
-        baseUrl: resolveNext('baseUrl'),
-        model: resolveNext('model'),
-      });
-      this.uiRenderer.renderCommandResult('Claude configuration updated');
-      this.recordCommandData('modelconfig', 'Claude configuration updated');
-    } catch (error) {
-      if (this.isPromptCancelError(error)) {
-        this.uiRenderer.renderCommandResult('Config dialog dismissed');
-        this.recordCommandData('modelconfig', 'Config dialog dismissed');
-        return;
-      }
-      const message = error instanceof Error ? error.message : 'Failed to complete config flow';
-      this.uiRenderer.renderError(message);
-      this.recordCommandData('modelconfig', `failed: ${message}`);
-    } finally {
-      this.isInteractiveCommandActive = false;
-      this.autoCompleter.resetSuggestions();
-      this.applyBlockCursorStyle();
-      this.ensureInputReadyAfterConfig();
-    }
-  }
-
-  private async handleApiKeySwitch(args: string[]): Promise<void> {
-    const invokedCommand = args.length > 0 ? '/apikey ********' : '/apikey';
-
-    try {
-      const rawInput = args.join(' ').trim();
-
-      if (rawInput) {
-        const normalized = rawInput.toLowerCase();
-        if (normalized === 'clear' || normalized === 'unset' || normalized === 'remove') {
-          await this.configStore.setProviderConfig('claude', { apiKey: undefined });
-          await this.configStore.setActiveProvider('claude');
-          await this.refreshHomeAfterModelCommand(invokedCommand, 'Claude API key cleared (local config updated)');
+      if (args.length > 0) {
+        const rawInput = args.join(' ').trim().toLowerCase();
+        if (!rawInput) {
+          await this.refreshHomeAfterModelCommand(invokedCommand, `Active provider: ${getProviderMeta(currentProvider).displayName}`);
           return;
         }
 
-        await this.configStore.setProviderConfig('claude', { apiKey: rawInput });
-        await this.configStore.setActiveProvider('claude');
-        await this.refreshHomeAfterModelCommand(invokedCommand, 'Claude API key updated (local config updated)');
+        const matched = PROVIDER_NAMES.find((provider) => provider === rawInput);
+        if (!matched) {
+          this.uiRenderer.renderError(`Unknown provider: ${rawInput}`);
+          this.uiRenderer.renderInfo(`Available providers: ${PROVIDER_NAMES.join(', ')}`);
+          this.recordCommandData('provider', `failed: unknown provider: ${rawInput}`);
+          return;
+        }
+
+        targetProvider = matched;
+      } else {
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          this.uiRenderer.renderError('Interactive provider selection requires a TTY. Use /provider <name> instead.');
+          this.recordCommandData('provider', 'failed: Interactive provider selection requires a TTY.');
+          return;
+        }
+
+        this.isInteractiveCommandActive = true;
+        this.clearSuggestions();
+        const { selectedProvider } = await inquirer.prompt<{ selectedProvider: ProviderName }>([
+          {
+            type: 'list',
+            name: 'selectedProvider',
+            message: 'Select the active provider',
+            choices: PROVIDER_NAMES.map((provider) => ({
+              name:
+                provider === currentProvider
+                  ? `${getProviderMeta(provider).displayName} (current)`
+                  : getProviderMeta(provider).displayName,
+              value: provider,
+            })),
+            default: currentProvider,
+          },
+        ]);
+        targetProvider = selectedProvider;
+      }
+
+      if (!targetProvider || targetProvider === currentProvider) {
+        await this.refreshHomeAfterModelCommand(invokedCommand, `Provider unchanged: ${getProviderMeta(currentProvider).displayName}`);
         return;
       }
 
-      if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        this.uiRenderer.renderError('Usage: /apikey [your-api-key|clear]');
-        this.recordCommandData('apikey', 'failed: Non-interactive mode requires inline API key or clear.');
-        return;
-      }
-
-      this.isInteractiveCommandActive = true;
-      this.clearSuggestions();
-      const { apiKey } = await inquirer.prompt<{ apiKey: string }>([
-        {
-          type: 'password',
-          name: 'apiKey',
-          message: 'Enter Claude API key (type "clear" to remove)',
-          mask: '*',
-          validate: (value: string) => Boolean(value.trim()) || 'API key cannot be empty',
-        },
-      ]);
-
-      const normalized = apiKey.trim().toLowerCase();
-      if (normalized === 'clear' || normalized === 'unset' || normalized === 'remove') {
-        await this.configStore.setProviderConfig('claude', { apiKey: undefined });
-        await this.configStore.setActiveProvider('claude');
-        await this.refreshHomeAfterModelCommand(invokedCommand, 'Claude API key cleared (local config updated)');
-        return;
-      }
-
-      await this.configStore.setProviderConfig('claude', { apiKey: apiKey.trim() });
-      await this.configStore.setActiveProvider('claude');
-      await this.refreshHomeAfterModelCommand(invokedCommand, 'Claude API key updated (local config updated)');
+      await this.configStore.setActiveProvider(targetProvider);
+      const result =
+        diagnostics.activeProviderSource === 'env'
+          ? `Active provider saved as ${getProviderMeta(targetProvider).displayName} (env override is still active)`
+          : `Active provider switched: ${getProviderMeta(currentProvider).displayName} -> ${getProviderMeta(targetProvider).displayName}`;
+      await this.refreshHomeAfterModelCommand(invokedCommand, result);
     } catch (error) {
       if (this.isPromptCancelError(error)) {
-        this.uiRenderer.renderCommandResult('API key update canceled');
-        this.recordCommandData('apikey', 'API key update canceled');
+        this.uiRenderer.renderCommandResult('Provider switch canceled');
+        this.recordCommandData('provider', 'Provider switch canceled');
         return;
       }
-      const message = error instanceof Error ? error.message : 'Failed to update API key';
+      const message = error instanceof Error ? error.message : 'Failed to switch provider';
       this.uiRenderer.renderError(message);
-      this.recordCommandData('apikey', `failed: ${message}`);
+      this.recordCommandData('provider', `failed: ${message}`);
     } finally {
       this.isInteractiveCommandActive = false;
       this.autoCompleter.resetSuggestions();
@@ -860,21 +716,25 @@ export class CLI {
       const invokedCommand = args.length > 0 ? `/model ${args.join(' ')}` : '/model';
       const config = await this.configStore.getConfig();
       const diagnostics = await this.configStore.getConfigDiagnostics();
-      const providerConfig = config.providers.claude ?? {};
+      const provider = config.activeProvider;
+      const providerMeta = getProviderMeta(provider);
+      const providerConfig = config.providers[provider] ?? {};
       const apiKey = providerConfig.apiKey?.trim();
       if (!apiKey) {
-        this.uiRenderer.renderError('Claude API key is missing. Set AERIS_CLAUDE_API_KEY or run /modelconfig first.');
+        this.uiRenderer.renderError(
+          `${providerMeta.displayName} API key is missing. Set ${providerMeta.envKeys.apiKey.join(' / ')} in .env first.`
+        );
         this.recordCommandData(
           'model',
-          'failed: Claude API key is missing. Set AERIS_CLAUDE_API_KEY or run /modelconfig first.'
+          `failed: ${providerMeta.displayName} API key is missing. Set ${providerMeta.envKeys.apiKey.join(' / ')} in .env first.`
         );
         return;
       }
 
-      const currentBaseUrl = providerConfig.baseUrl?.trim() || CLAUDE_META.defaultBaseUrl;
+      const currentBaseUrl = providerConfig.baseUrl?.trim() || providerMeta.defaultBaseUrl;
       const currentEffectiveModelValue = providerConfig.model?.trim() || '';
       const currentEffectiveModel = currentEffectiveModelValue || 'Not set';
-      const isSessionModelOverrideActive = diagnostics.providerSources.claude.model === 'session';
+      const isSessionModelOverrideActive = diagnostics.providerSources[provider].model === 'session';
       let targetModel: string | undefined;
 
       if (args.length > 0) {
@@ -894,23 +754,27 @@ export class CLI {
             return;
           }
 
-          this.configStore.clearSessionProviderConfig('claude', ['model']);
+          this.configStore.clearSessionProviderConfig(provider, ['model']);
           const nextConfig = await this.configStore.getConfig();
-          const nextModel = nextConfig.providers.claude?.model?.trim() || 'Not set';
+          const nextModel = nextConfig.providers[provider]?.model?.trim() || 'Not set';
           await this.refreshHomeAfterModelCommand(invokedCommand, `Session model cleared. Active model: ${nextModel}`);
           return;
         }
 
-        const availableModels = await this.fetchAvailableModels(currentBaseUrl, apiKey);
-        if (!availableModels.includes(rawInput)) {
-          const preview = availableModels.slice(0, 10).join(', ');
-          const suffix = availableModels.length > 10 ? ', ...' : '';
-          this.uiRenderer.renderError(`Model not available for current API key: ${rawInput}`);
-          this.uiRenderer.renderInfo(`Available models: ${preview}${suffix}`);
-          this.recordCommandData('model', `failed: model not available: ${rawInput}`);
-          return;
+        if (provider === 'openrouter') {
+          targetModel = rawInput;
+        } else {
+          const availableModels = await this.fetchAvailableModels(provider, currentBaseUrl, apiKey);
+          if (!availableModels.includes(rawInput)) {
+            const preview = availableModels.slice(0, 10).join(', ');
+            const suffix = availableModels.length > 10 ? ', ...' : '';
+            this.uiRenderer.renderError(`${providerMeta.displayName} model not available for current API key: ${rawInput}`);
+            this.uiRenderer.renderInfo(`Available models: ${preview}${suffix}`);
+            this.recordCommandData('model', `failed: model not available: ${rawInput}`);
+            return;
+          }
+          targetModel = rawInput;
         }
-        targetModel = rawInput;
       } else {
         if (!process.stdin.isTTY || !process.stdout.isTTY) {
           this.uiRenderer.renderError('Interactive model selection requires a TTY. Use /model <model-name> instead.');
@@ -918,33 +782,53 @@ export class CLI {
           return;
         }
 
-        const availableModels = await this.fetchAvailableModels(currentBaseUrl, apiKey);
-        if (availableModels.length === 0) {
-          this.uiRenderer.renderError('No available models returned by current API endpoint.');
-          this.recordCommandData('model', 'failed: No available models returned by current API endpoint.');
-          return;
+        if (provider === 'openrouter') {
+          const { enteredModel } = await inquirer.prompt<{ enteredModel: string }>([
+            {
+              type: 'input',
+              name: 'enteredModel',
+              message: `Current model: ${currentEffectiveModel}. Enter the OpenRouter model name`,
+              default: currentEffectiveModelValue || providerMeta.modelPlaceholder,
+              validate: (value: string) => Boolean(value.trim()) || 'Model name cannot be empty',
+            },
+          ]);
+
+          const normalizedEntered = enteredModel.trim();
+          if (normalizedEntered === currentEffectiveModelValue) {
+            await this.refreshHomeAfterModelCommand(invokedCommand, `Model unchanged: ${currentEffectiveModel}`);
+            return;
+          }
+
+          targetModel = normalizedEntered;
+        } else {
+          const availableModels = await this.fetchAvailableModels(provider, currentBaseUrl, apiKey);
+          if (availableModels.length === 0) {
+            this.uiRenderer.renderError('No available models returned by current API endpoint.');
+            this.recordCommandData('model', 'failed: No available models returned by current API endpoint.');
+            return;
+          }
+
+          const { selectedModel } = await inquirer.prompt<{ selectedModel: string }>([
+            {
+              type: 'list',
+              name: 'selectedModel',
+              message: `Current model: ${currentEffectiveModel}. Select target model`,
+              choices: availableModels.map((modelName) => ({
+                name: modelName === currentEffectiveModel ? `${modelName} (current)` : modelName,
+                value: modelName,
+              })),
+              default: availableModels.includes(currentEffectiveModel) ? currentEffectiveModel : availableModels[0],
+              pageSize: Math.min(15, availableModels.length),
+            },
+          ]);
+
+          if (selectedModel === currentEffectiveModel) {
+            await this.refreshHomeAfterModelCommand(invokedCommand, `Model unchanged: ${currentEffectiveModel}`);
+            return;
+          }
+
+          targetModel = selectedModel;
         }
-
-        const { selectedModel } = await inquirer.prompt<{ selectedModel: string }>([
-          {
-            type: 'list',
-            name: 'selectedModel',
-            message: `Current model: ${currentEffectiveModel}. Select target model`,
-            choices: availableModels.map((modelName) => ({
-              name: modelName === currentEffectiveModel ? `${modelName} (current)` : modelName,
-              value: modelName,
-            })),
-            default: availableModels.includes(currentEffectiveModel) ? currentEffectiveModel : availableModels[0],
-            pageSize: Math.min(15, availableModels.length),
-          },
-        ]);
-
-        if (selectedModel === currentEffectiveModel) {
-          await this.refreshHomeAfterModelCommand(invokedCommand, `Model unchanged: ${currentEffectiveModel}`);
-          return;
-        }
-
-        targetModel = selectedModel;
       }
 
       const previousEffectiveModel = currentEffectiveModel;
@@ -957,7 +841,7 @@ export class CLI {
         return;
       }
 
-      this.configStore.setSessionProviderConfig('claude', { model: targetModel });
+      this.configStore.setSessionProviderConfig(provider, { model: targetModel });
       await this.refreshHomeAfterModelCommand(
         invokedCommand,
         `Session model switched: ${previousEffectiveModel} -> ${nextEffectiveModel}`
@@ -1014,7 +898,7 @@ export class CLI {
     this.recordCommandData('projectcontext', 'Usage: /projectcontext [on|off|status]');
   }
 
-  private async fetchAvailableModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  private async fetchAvailableModels(provider: ProviderName, baseUrl: string, apiKey: string): Promise<string[]> {
     const normalizedBase = baseUrl.replace(/\/+$/, '');
 
     // Enforce HTTPS to prevent API key transmission over plain HTTP.
@@ -1028,85 +912,12 @@ export class CLI {
       throw new Error(`Base URL must use HTTPS (got: ${parsedUrl.protocol}). Refusing to send API key over insecure connection.`);
     }
 
-    const url = `${normalizedBase}/models`;
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-    });
-
-    const raw = await response.text();
-    if (!response.ok) {
-      const preview = raw.slice(0, 300);
-      throw new Error(`Failed to fetch models (${response.status}) from ${url}: ${preview}`);
+    const adapter = this.adaptersByProvider.get(provider);
+    if (!adapter) {
+      throw new Error(`${getProviderMeta(provider).displayName} adapter not found.`);
     }
 
-    let payload: unknown;
-    try {
-      payload = raw ? (JSON.parse(raw) as unknown) : {};
-    } catch {
-      throw new Error('Model list response is not valid JSON.');
-    }
-
-    const models = this.extractModelIds(payload);
-    if (models.length === 0) {
-      throw new Error('Model list response did not contain any model IDs.');
-    }
-
-    return models;
-  }
-
-  private extractModelIds(payload: unknown): string[] {
-    const add = (result: string[], seen: Set<string>, value: unknown): void => {
-      if (typeof value === 'string' && value.trim()) {
-        const id = value.trim();
-        if (!seen.has(id)) {
-          seen.add(id);
-          result.push(id);
-        }
-      }
-    };
-
-    const readCollection = (collection: unknown[], result: string[], seen: Set<string>): void => {
-      collection.forEach((item) => {
-        if (typeof item === 'string') {
-          add(result, seen, item);
-          return;
-        }
-
-        if (item && typeof item === 'object') {
-          const record = item as Record<string, unknown>;
-          add(result, seen, record.id);
-          add(result, seen, record.model);
-          add(result, seen, record.name);
-        }
-      });
-    };
-
-    const result: string[] = [];
-    const seen = new Set<string>();
-
-    if (Array.isArray(payload)) {
-      readCollection(payload, result, seen);
-      return result;
-    }
-
-    if (!payload || typeof payload !== 'object') {
-      return result;
-    }
-
-    const record = payload as Record<string, unknown>;
-    if (Array.isArray(record.data)) {
-      readCollection(record.data, result, seen);
-    }
-    if (Array.isArray(record.models)) {
-      readCollection(record.models, result, seen);
-    }
-
-    return result;
+    return adapter.listModels({ apiKey, baseUrl: normalizedBase });
   }
 
   private ensureInputReadyAfterConfig(): void {
@@ -1184,68 +995,18 @@ export class CLI {
     return 1;
   }
 
-  private async renderConfigHeader(diagnostics: ConfigDiagnostics): Promise<void> {
-    const header = [
-      chalk.bold('Claude API Configuration'),
-      chalk.dim('Configure API Key / Base URL / Model'),
-      '',
-      `${chalk.gray('Default Base URL:')} ${chalk.cyan(CLAUDE_META.defaultBaseUrl)}`,
-      `${chalk.gray('Config File:')} ${chalk.dim(this.configStore.getConfigPath())}`,
-      `${chalk.gray('Environment Keys:')} ${chalk.dim(
-        'AERIS_CLAUDE_API_KEY, AERIS_CLAUDE_BASE_URL, AERIS_CLAUDE_MODEL, ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL'
-      )}`,
-      diagnostics.loadedEnvFiles.length > 0
-        ? `${chalk.gray('Loaded Env Files:')} ${chalk.dim(diagnostics.loadedEnvFiles.join(', '))}`
-        : `${chalk.gray('Loaded Env Files:')} ${chalk.dim('none detected')}`,
-    ].join('\n');
-
-    console.log('');
-    console.log(
-      boxen(header, {
-        padding: { top: 0, right: 1, bottom: 0, left: 1 },
-        margin: { top: 0, right: 0, bottom: 1, left: 0 },
-        borderStyle: 'round',
-        borderColor: 'cyan',
-        title: ' /modelconfig ',
-        titleAlignment: 'left',
-      })
-    );
-  }
-
-  private renderClaudeSnapshot(config: ProviderConfig): void {
-    const apiValue = config.apiKey?.trim() ? chalk.green(this.maskApiKey(config.apiKey)) : chalk.yellow('Not set');
-    const baseUrlValue = config.baseUrl?.trim() ? chalk.white(config.baseUrl.trim()) : chalk.dim('Using default');
-    const modelValue = config.model?.trim() ? chalk.white(config.model.trim()) : chalk.yellow('Not set');
-
-    const snapshot = [
-      `${chalk.gray('Current API Key')} : ${apiValue}`,
-      `${chalk.gray('Current Base URL')} : ${baseUrlValue}`,
-      `${chalk.gray('Current Model')} : ${modelValue}`,
-    ].join('\n');
-
-    console.log(
-      boxen(snapshot, {
-        padding: { top: 0, right: 1, bottom: 0, left: 1 },
-        margin: { top: 0, right: 0, bottom: 1, left: 0 },
-        borderStyle: 'single',
-        borderColor: 'gray',
-        title: ' Current State ',
-        titleAlignment: 'left',
-      })
-    );
-  }
-
-  private renderConfigStep(title: string, subtitle: string): void {
-    console.log(chalk.cyan(`  ${title}`) + chalk.dim(`  ${subtitle}`));
-  }
-
-  private renderEnvironmentStatusLines(diagnostics: ConfigDiagnostics): void {
-    const providerSources = diagnostics.providerSources.claude;
+  private renderEnvironmentStatusLines(diagnostics: ConfigDiagnostics, provider: ProviderName): void {
+    const providerSources = diagnostics.providerSources[provider];
     const envOverrides = this.getEnvironmentOverrideLabels(providerSources);
     const sessionOverrides = this.getSessionOverrideLabels(providerSources);
 
     if (diagnostics.loadedEnvFiles.length > 0) {
       console.log(chalk.dim('  Loaded env files: ') + this.homeAccent(diagnostics.loadedEnvFiles.join(', ')));
+    }
+
+    if (diagnostics.activeProviderSource === 'env') {
+      console.log(chalk.yellow('  Environment override active: ') + chalk.white('Active Provider'));
+      console.log(chalk.dim('  Runtime active provider is currently controlled by AERIS_ACTIVE_PROVIDER'));
     }
 
     if (envOverrides.length > 0 || diagnostics.projectContextEnabledSource === 'env') {
@@ -1255,7 +1016,7 @@ export class CLI {
       }
 
       console.log(chalk.yellow('  Environment override active: ') + chalk.white(segments.join(', ')));
-      console.log(chalk.dim('  Runtime values from process.env/.env take precedence over saved local config'));
+      console.log(chalk.dim('  Runtime provider settings come from process.env/.env'));
     }
 
     if (sessionOverrides.length > 0) {
@@ -1330,36 +1091,6 @@ export class CLI {
     }
 
     return 'local config file';
-  }
-
-  private renderConfigSummary(config: ProviderConfig): void {
-    const apiValue = config.apiKey?.trim() ? chalk.green(this.maskApiKey(config.apiKey)) : chalk.yellow('Not set');
-    const baseUrlValue = config.baseUrl?.trim() ? chalk.white(config.baseUrl.trim()) : chalk.cyan(CLAUDE_META.defaultBaseUrl);
-    const modelValue = config.model?.trim() ? chalk.white(config.model.trim()) : chalk.yellow('Not set');
-
-    const summary = [
-      `${chalk.gray('API Key')} : ${apiValue}`,
-      `${chalk.gray('Base URL')} : ${baseUrlValue}`,
-      `${chalk.gray('Model')} : ${modelValue}`,
-    ].join('\n');
-
-    console.log('');
-    console.log(
-      boxen(summary, {
-        padding: { top: 0, right: 1, bottom: 0, left: 1 },
-        borderStyle: 'round',
-        borderColor: 'green',
-        title: ' Saved ',
-        titleAlignment: 'left',
-      })
-    );
-  }
-
-  private maskApiKey(apiKey?: string): string {
-    const trimmed = apiKey?.trim() ?? '';
-    if (!trimmed) return 'Not set';
-    if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}***`;
-    return `${trimmed.slice(0, 4)}***${trimmed.slice(-4)}`;
   }
 
   private isPromptCancelError(error: unknown): boolean {

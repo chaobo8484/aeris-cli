@@ -2,8 +2,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { getLoadedEnvironmentFiles } from '../config/loadEnv.js';
-
-export type ProviderName = 'claude';
+import { getProviderMeta, isProviderName, ProviderName, PROVIDER_NAMES } from '../config/providerCatalog.js';
 
 export interface ProviderConfig {
   apiKey?: string;
@@ -29,6 +28,7 @@ export interface ProviderConfigSources {
 export interface ConfigDiagnostics {
   loadedEnvFiles: string[];
   providerSources: Record<ProviderName, ProviderConfigSources>;
+  activeProviderSource: Exclude<ConfigValueSource, 'unset'>;
   projectContextEnabledSource: Exclude<ConfigValueSource, 'unset'>;
 }
 
@@ -36,6 +36,7 @@ const DEFAULT_CONFIG: AppConfig = {
   activeProvider: 'claude',
   providers: {
     claude: {},
+    openrouter: {},
   },
   trustedPaths: [],
   projectContextEnabled: true,
@@ -64,10 +65,9 @@ export class ConfigStore {
       return {
         ...DEFAULT_CONFIG,
         ...parsed,
-        activeProvider: 'claude',
+        activeProvider: isProviderName(parsed.activeProvider) ? parsed.activeProvider : DEFAULT_CONFIG.activeProvider,
         providers: {
           ...DEFAULT_CONFIG.providers,
-          ...(parsed.providers ?? {}),
         },
         trustedPaths: Array.isArray(parsed.trustedPaths) ? parsed.trustedPaths : [],
         projectContextEnabled:
@@ -82,38 +82,42 @@ export class ConfigStore {
 
   async getConfigDiagnostics(): Promise<ConfigDiagnostics> {
     const stored = await this.getStoredConfig();
-    const sessionProvider = this.getSessionProviderConfig('claude');
-    const envProvider = this.getEnvironmentProviderConfig();
     const envProjectContextEnabled = this.readBooleanEnv(['AERIS_PROJECT_CONTEXT_ENABLED']);
-    const storedProvider = stored.providers.claude ?? {};
+    const envActiveProvider = this.readActiveProviderEnv();
+
+    const providerSources = PROVIDER_NAMES.reduce<Record<ProviderName, ProviderConfigSources>>((acc, provider) => {
+      const sessionProvider = this.getSessionProviderConfig(provider);
+      const envProvider = this.getEnvironmentProviderConfig(provider);
+
+      acc[provider] = {
+        apiKey: sessionProvider.apiKey
+          ? 'session'
+          : envProvider.apiKey
+            ? 'env'
+            : 'unset',
+        baseUrl: sessionProvider.baseUrl
+          ? 'session'
+          : envProvider.baseUrl
+            ? 'env'
+            : 'default',
+        model: sessionProvider.model
+          ? 'session'
+          : envProvider.model
+            ? 'env'
+            : 'default',
+      };
+
+      return acc;
+    }, {} as Record<ProviderName, ProviderConfigSources>);
 
     return {
       loadedEnvFiles: getLoadedEnvironmentFiles(),
-      providerSources: {
-        claude: {
-          apiKey: sessionProvider.apiKey
-            ? 'session'
-            : envProvider.apiKey
-              ? 'env'
-              : storedProvider.apiKey?.trim()
-                ? 'local'
-                : 'unset',
-          baseUrl: sessionProvider.baseUrl
-            ? 'session'
-            : envProvider.baseUrl
-              ? 'env'
-              : storedProvider.baseUrl?.trim()
-                ? 'local'
-                : 'default',
-          model: sessionProvider.model
-            ? 'session'
-            : envProvider.model
-              ? 'env'
-              : storedProvider.model?.trim()
-                ? 'local'
-                : 'default',
-        },
-      },
+      providerSources,
+      activeProviderSource: envActiveProvider
+        ? 'env'
+        : stored.activeProvider !== DEFAULT_CONFIG.activeProvider
+          ? 'local'
+          : 'default',
       projectContextEnabledSource:
         typeof envProjectContextEnabled === 'boolean'
           ? 'env'
@@ -121,21 +125,6 @@ export class ConfigStore {
             ? 'local'
             : 'default',
     };
-  }
-
-  async setProviderConfig(provider: ProviderName, config: ProviderConfig): Promise<void> {
-    const current = await this.getStoredConfig();
-    const next: AppConfig = {
-      ...current,
-      providers: {
-        ...current.providers,
-        [provider]: {
-          ...current.providers[provider],
-          ...config,
-        },
-      },
-    };
-    await this.writeConfig(next);
   }
 
   async setActiveProvider(provider: ProviderName): Promise<void> {
@@ -229,48 +218,59 @@ export class ConfigStore {
   }
 
   private applyEnvironmentOverrides(config: AppConfig): AppConfig {
-    const envProvider = this.getEnvironmentProviderConfig();
+    const nextProviders = { ...config.providers };
+    for (const provider of PROVIDER_NAMES) {
+      const envProvider = this.getEnvironmentProviderConfig(provider);
+      nextProviders[provider] = {
+        ...nextProviders[provider],
+        ...(envProvider.apiKey ? { apiKey: envProvider.apiKey } : {}),
+        ...(envProvider.baseUrl ? { baseUrl: envProvider.baseUrl } : {}),
+        ...(envProvider.model ? { model: envProvider.model } : {}),
+      };
+    }
+
     const envProjectContextEnabled = this.readBooleanEnv(['AERIS_PROJECT_CONTEXT_ENABLED']);
+    const envActiveProvider = this.readActiveProviderEnv();
 
     return {
       ...config,
-      providers: {
-        ...config.providers,
-        claude: {
-          ...config.providers.claude,
-          ...(envProvider.apiKey ? { apiKey: envProvider.apiKey } : {}),
-          ...(envProvider.baseUrl ? { baseUrl: envProvider.baseUrl } : {}),
-          ...(envProvider.model ? { model: envProvider.model } : {}),
-        },
-      },
+      activeProvider: envActiveProvider ?? config.activeProvider,
+      providers: nextProviders,
       projectContextEnabled:
         typeof envProjectContextEnabled === 'boolean' ? envProjectContextEnabled : config.projectContextEnabled,
     };
   }
 
   private applySessionOverrides(config: AppConfig): AppConfig {
-    const sessionProvider = this.getSessionProviderConfig('claude');
+    const nextProviders = { ...config.providers };
+    for (const provider of PROVIDER_NAMES) {
+      const sessionProvider = this.getSessionProviderConfig(provider);
+      nextProviders[provider] = {
+        ...nextProviders[provider],
+        ...(sessionProvider.apiKey ? { apiKey: sessionProvider.apiKey } : {}),
+        ...(sessionProvider.baseUrl ? { baseUrl: sessionProvider.baseUrl } : {}),
+        ...(sessionProvider.model ? { model: sessionProvider.model } : {}),
+      };
+    }
 
     return {
       ...config,
-      providers: {
-        ...config.providers,
-        claude: {
-          ...config.providers.claude,
-          ...(sessionProvider.apiKey ? { apiKey: sessionProvider.apiKey } : {}),
-          ...(sessionProvider.baseUrl ? { baseUrl: sessionProvider.baseUrl } : {}),
-          ...(sessionProvider.model ? { model: sessionProvider.model } : {}),
-        },
-      },
+      providers: nextProviders,
     };
   }
 
-  private getEnvironmentProviderConfig(): ProviderConfig {
+  private getEnvironmentProviderConfig(provider: ProviderName): ProviderConfig {
+    const meta = getProviderMeta(provider);
     return {
-      apiKey: this.readStringEnv(['AERIS_CLAUDE_API_KEY', 'ANTHROPIC_API_KEY']),
-      baseUrl: this.readStringEnv(['AERIS_CLAUDE_BASE_URL', 'ANTHROPIC_BASE_URL']),
-      model: this.readStringEnv(['AERIS_CLAUDE_MODEL']),
+      apiKey: this.readStringEnv(meta.envKeys.apiKey),
+      baseUrl: this.readStringEnv(meta.envKeys.baseUrl),
+      model: this.readStringEnv(meta.envKeys.model),
     };
+  }
+
+  private readActiveProviderEnv(): ProviderName | undefined {
+    const value = this.readStringEnv(['AERIS_ACTIVE_PROVIDER']);
+    return isProviderName(value) ? value : undefined;
   }
 
   private getSessionProviderConfig(provider: ProviderName): ProviderConfig {
