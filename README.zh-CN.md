@@ -1,6 +1,6 @@
-# Aeris
+# Odradek
 
-[![License](https://img.shields.io/github/license/chaobo8484/aeris-cli)](https://github.com/chaobo8484/aeris-cli/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/chaobo8484/odradek-cli)](https://github.com/chaobo8484/odradek-cli/blob/main/LICENSE)
 ![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?style=for-the-badge&logo=claude&logoColor=white)
@@ -9,7 +9,7 @@
 
 [English](README.md) | **简体中文**
 
-Aeris 是一个用于分析、增强和诊断 Claude Code / Agent 工作流的 CLI 工具。
+Odradek 是一个用于分析、增强和诊断 Claude Code / Agent 工作流的 CLI 工具。
 
 ## 亮点
 
@@ -50,16 +50,16 @@ Copy-Item .env.example .env
 
 推荐做法：
 
-- 必填 `AERIS_CLAUDE_API_KEY`
-- 只有在你使用自定义或兼容网关时，才需要特别设置 `AERIS_CLAUDE_BASE_URL`
-- 如果你希望在 CLI 中通过 `/model` 自由切换模型，就不要设置 `AERIS_CLAUDE_MODEL`
+- 必填 `ODRADEK_CLAUDE_API_KEY`
+- 只有在你使用自定义或兼容网关时，才需要特别设置 `ODRADEK_CLAUDE_BASE_URL`
+- 如果你希望在 CLI 中通过 `/model` 自由切换模型，就不要设置 `ODRADEK_CLAUDE_MODEL`
 
 示例：
 
 ```env
-AERIS_CLAUDE_API_KEY=your_api_key
-AERIS_CLAUDE_BASE_URL=https://api.anthropic.com/v1
-AERIS_PROJECT_CONTEXT_ENABLED=true
+ODRADEK_CLAUDE_API_KEY=your_api_key
+ODRADEK_CLAUDE_BASE_URL=https://api.anthropic.com/v1
+ODRADEK_PROJECT_CONTEXT_ENABLED=true
 ```
 
 3. 启动 CLI。
@@ -68,7 +68,7 @@ AERIS_PROJECT_CONTEXT_ENABLED=true
 npm run dev
 ```
 
-4. 如果你没有在 `.env` 中设置 `AERIS_CLAUDE_MODEL`，可在 CLI 中选择模型。
+4. 如果你没有在 `.env` 中设置 `ODRADEK_CLAUDE_MODEL`，可在 CLI 中选择模型。
 
 ```text
 /model
@@ -99,10 +99,10 @@ npm run dev
 
 | 变量 | 说明 |
 |------|------|
-| `AERIS_CLAUDE_API_KEY` | Claude / Anthropic 兼容 API Key |
-| `AERIS_CLAUDE_BASE_URL` | API 基础地址 |
-| `AERIS_CLAUDE_MODEL` | 项目的默认模型 |
-| `AERIS_PROJECT_CONTEXT_ENABLED` | 是否启用项目上下文注入 |
+| `ODRADEK_CLAUDE_API_KEY` | Claude / Anthropic 兼容 API Key |
+| `ODRADEK_CLAUDE_BASE_URL` | API 基础地址 |
+| `ODRADEK_CLAUDE_MODEL` | 项目的默认模型 |
+| `ODRADEK_PROJECT_CONTEXT_ENABLED` | 是否启用项目上下文注入 |
 | `ANTHROPIC_API_KEY` | 兼容 Anthropic 的备用 API Key |
 | `ANTHROPIC_BASE_URL` | 兼容 Anthropic 的备用基础地址 |
 
@@ -111,7 +111,7 @@ npm run dev
 Windows：
 
 ```text
-%APPDATA%/aeris-cli/config.json
+%APPDATA%/odradek-cli/config.json
 ```
 
 ## 常用命令

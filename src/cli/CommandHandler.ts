@@ -165,14 +165,26 @@ type PromptCoverageItem = {
   wasReferencedLater: boolean;
 };
 
+type PromptCoverageSignalKind = 'high_value' | 'read_only' | 'unused';
+
+type PromptCoverageSignal = {
+  kind: PromptCoverageSignalKind;
+  severity: 'high' | 'medium' | 'low';
+  tokenImpact: number;
+  reason: string;
+  asset: PromptCoverageItem;
+};
+
 type PromptCoverageSummary = {
   scannedAssets: number;
   readAssets: PromptCoverageItem[];
   unreadAssets: PromptCoverageItem[];
+  highValueAssets: PromptCoverageItem[];
   matchedReadCount: number;
   scannedPromptFiles: number;
   scannedSkills: number;
-  assetPathKeys: string[];
+  promptNoiseTokens: number;
+  signals: PromptCoverageSignal[];
 };
 
 type PromptScanTokenizerMode = 'count_tokens' | 'messages_usage' | 'estimated';
@@ -620,12 +632,12 @@ export class CommandHandler {
           `jsonlFiles=${target.filePaths.length}`,
           `sessionsAnalyzed=${analysis.sessionsAnalyzed}`,
           `sessionsWithSignals=${analysis.sessionsWithSignals}`,
-          `signals=${analysis.signals.length}`,
+          `events=${analysis.events.length}`,
           `promptAssetsRead=${coverage.readAssets.length}`,
           `promptAssetsUnread=${coverage.unreadAssets.length}`,
           `estimatedTokens=${Math.round(analysis.totalEstimatedTokens)}`,
           `noiseTokens=${Math.round(analysis.totalNoiseTokens)}`,
-          `topBucket=${analysis.buckets[0]?.label ?? '(none)'}`,
+          `topCategory=${analysis.categories[0]?.label ?? '(none)'}`,
         ].join('\n')
       );
     } catch (error) {
@@ -805,15 +817,15 @@ export class CommandHandler {
     contextHealth: any
   ): string {
     return [
-      '你是一名负责审查 Claude / Agent 工作流的高级提示工程与上下文优化顾问。',
-      '请严格基于下面的扫描摘要做判断，不要捏造不存在的事实；如果证据不足，请明确指出。',
-      '目标：结合 /scan_prompt、/scan_tokens、/context_health 的结果，判断当前项目最需要修改或调整的内容。',
+      'You are a senior prompt-engineering and context-optimization advisor reviewing a Claude / Agent workflow.',
+      'Base your judgment strictly on the scan summaries below. Do not invent facts. If evidence is insufficient, say so explicitly.',
+      'Goal: combine the outputs of /scan_prompt, /scan_tokens, and /context_health, then identify what in the current project most needs to be changed or tuned.',
       '',
-      '请按下面结构输出，使用简体中文，结论要具体、可执行：',
-      '1. 总体判断：2-4 句，概括当前状态与核心风险。',
-      '2. 高优先级调整项：给出 3-5 条，每条都要包含【问题】【证据】【建议动作】。',
-      '3. 建议修改清单：按【Prompt / Rules】【Docs / Reference】【Context / Token】三个分组列出建议。',
-      '4. 缺失信息或不确定性：如果某一项数据不足，请说明还需要补什么数据。',
+      'Respond in English using this structure, and keep the conclusions concrete and actionable:',
+      '1. Overall assessment: 2-4 sentences summarizing the current state and the main risks.',
+      '2. High-priority adjustments: 3-5 items, each with [Problem] [Evidence] [Recommended action].',
+      '3. Suggested change list: group recommendations under [Prompt / Rules] [Docs / Reference] [Context / Token].',
+      '4. Missing information or uncertainty: if any area lacks evidence, explain what additional data is needed.',
       '',
       '[scan_prompt summary]',
       promptScan.commandData,
@@ -1216,17 +1228,26 @@ export class CommandHandler {
 
     const bestReadByAsset = new Map<string, ContextNoiseReadRecord>();
     for (const record of analysis.readRecords) {
-      const normalizedRead = this.normalizeRelativePath(path.relative(rootPath, path.resolve(record.path))).toLowerCase();
-      if (!normalizedRead || normalizedRead.startsWith('..')) {
+      const candidatePaths = [
+        path.resolve(rootPath, record.path),
+        record.cwd ? path.resolve(record.cwd, record.path) : '',
+        path.resolve(record.path),
+      ]
+        .filter(Boolean)
+        .map((candidate) => this.normalizeRelativePath(path.relative(rootPath, candidate)).toLowerCase())
+        .filter((candidate) => candidate && !candidate.startsWith('..'));
+
+      const matchedKey = candidatePaths.find((candidate) => assetMap.has(candidate));
+      if (!matchedKey) {
         continue;
       }
-      const asset = assetMap.get(normalizedRead);
+      const asset = assetMap.get(matchedKey);
       if (!asset) {
         continue;
       }
-      const previous = bestReadByAsset.get(normalizedRead);
+      const previous = bestReadByAsset.get(matchedKey);
       if (!previous || record.tokenCount > previous.tokenCount) {
-        bestReadByAsset.set(normalizedRead, record);
+        bestReadByAsset.set(matchedKey, record);
       }
     }
 
@@ -1248,50 +1269,87 @@ export class CommandHandler {
     });
 
     const assets = Array.from(assetMap.values());
+    const readAssets = assets
+      .filter((asset) => asset.read)
+      .sort((a, b) => b.readTokens - a.readTokens || a.relativePath.localeCompare(b.relativePath));
+    const unreadAssets = assets
+      .filter((asset) => !asset.read)
+      .sort((a, b) => b.tokenCount - a.tokenCount || a.relativePath.localeCompare(b.relativePath));
+    const highValueAssets = readAssets.filter((asset) => asset.wasReferencedLater);
+    const signals: PromptCoverageSignal[] = [
+      ...readAssets
+        .filter((asset) => !asset.wasReferencedLater)
+        .map((asset) => ({
+          kind: 'read_only' as const,
+          severity: asset.readTokens >= 1200 ? 'high' as const : asset.readTokens >= 500 ? 'medium' as const : 'low' as const,
+          tokenImpact: asset.readTokens,
+          reason: 'This asset was loaded into context but showed no clear downstream reuse.',
+          asset,
+        })),
+      ...unreadAssets
+        .filter((asset) => asset.tokenCount >= 500)
+        .slice(0, 8)
+        .map((asset) => ({
+          kind: 'unused' as const,
+          severity: asset.tokenCount >= 1200 ? 'medium' as const : 'low' as const,
+          tokenImpact: asset.tokenCount,
+          reason: 'This larger prompt or skill asset exists in the repo but was never touched in the scanned sessions.',
+          asset,
+        })),
+      ...highValueAssets.slice(0, 6).map((asset) => ({
+        kind: 'high_value' as const,
+        severity: 'low' as const,
+        tokenImpact: asset.readTokens,
+        reason: 'This asset continued to influence later tool inputs or reasoning and appears to be high-value context.',
+        asset,
+      })),
+    ]
+      .sort((a, b) => b.tokenImpact - a.tokenImpact || a.asset.relativePath.localeCompare(b.asset.relativePath))
+      .slice(0, 12);
+
     return {
       scannedAssets: assets.length,
       matchedReadCount: bestReadByAsset.size,
       scannedPromptFiles: promptScan.files.length,
       scannedSkills: skillScan.skills.length,
-      assetPathKeys: assets.map((asset) => this.normalizeAssetComparePath(asset.fullPath)),
-      readAssets: assets
-        .filter((asset) => asset.read)
-        .sort((a, b) => b.readTokens - a.readTokens || a.relativePath.localeCompare(b.relativePath)),
-      unreadAssets: assets
-        .filter((asset) => !asset.read)
-        .sort((a, b) => b.tokenCount - a.tokenCount || a.relativePath.localeCompare(b.relativePath)),
+      readAssets,
+      unreadAssets,
+      highValueAssets,
+      promptNoiseTokens: readAssets
+        .filter((asset) => !asset.wasReferencedLater)
+        .reduce((sum, asset) => sum + asset.readTokens, 0),
+      signals,
     };
   }
 
   private renderContextNoiseAnalysis(target: TokenScanTarget, analysis: ContextNoiseAnalysis, coverage: PromptCoverageSummary): void {
-    const assetPathSet = new Set(coverage.assetPathKeys);
-    const assetSignals = analysis.signals.filter((signal) => this.matchesContextAssetTarget(signal.target, assetPathSet));
-    const assetKeepCandidates = analysis.keepCandidates.filter((candidate) =>
-      this.matchesContextAssetTarget(candidate.target, assetPathSet)
-    );
-    const assetNoiseTokens = assetSignals.reduce((sum, signal) => sum + signal.wastedTokens, 0);
     const noisyShare = analysis.totalEstimatedTokens > 0 ? analysis.totalNoiseTokens / analysis.totalEstimatedTokens : 0;
-    const healthColor =
-      noisyShare >= 0.3 ? chalk.red : noisyShare >= 0.15 ? chalk.yellow : chalk.green;
-    const statusText =
-      noisyShare >= 0.3 ? 'HIGH NOISE' : noisyShare >= 0.15 ? 'WATCH NOISE' : 'LOW NOISE';
+    const primarySession = analysis.primarySession;
+    const noiseTokenLabel =
+      noisyShare >= 0.3
+        ? chalk.red(`${this.formatTokenNumber(analysis.totalNoiseTokens)} tok (${Math.round(noisyShare * 100)}%)`)
+        : noisyShare >= 0.15
+        ? chalk.yellow(`${this.formatTokenNumber(analysis.totalNoiseTokens)} tok (${Math.round(noisyShare * 100)}%)`)
+        : chalk.green(`${this.formatTokenNumber(analysis.totalNoiseTokens)} tok (${Math.round(noisyShare * 100)}%)`);
 
-    const lines: string[] = [
-      `Scope: ${target.scopeLabel}`,
-      `Source: ${target.sourceLabel}`,
-      `Sessions: ${analysis.sessionsAnalyzed}/${analysis.sessionsScanned} analyzed`,
-      `Sessions with signals: ${analysis.sessionsWithSignals}`,
-      `Estimated context tokens: ${this.formatTokenNumber(analysis.totalEstimatedTokens)}`,
-      `Estimated noise tokens: ${this.formatTokenNumber(analysis.totalNoiseTokens)} (${Math.round(noisyShare * 100)}%)`,
-      `Prompt/skill assets: ${coverage.readAssets.length}/${coverage.scannedAssets} read`,
-      `Context-asset noise: ${this.formatTokenNumber(assetNoiseTokens)} tok across ${assetSignals.length} signals`,
-      `Status: ${healthColor(statusText)}`,
+    const metaLines: string[] = [
+      `Scope: ${target.scopeLabel} (${target.sourceLabel})`,
+      `Session: ${
+        primarySession
+          ? `${primarySession.sessionId} | ${primarySession.startTime} -> ${primarySession.endTime}`
+          : 'n/a'
+      }`,
+      `Total tokens: ${this.formatTokenNumber(analysis.totalEstimatedTokens)} tok`,
+      `Noise tokens: ${noiseTokenLabel}`,
+      `Tool calls: ${this.formatTokenNumber(analysis.totalToolCalls)}`,
+      `Duplicate calls: ${this.formatTokenNumber(analysis.duplicateCalls)}`,
+      `Session file: ${primarySession ? this.truncateBlockName(primarySession.filePath, 92) : 'n/a'}`,
     ];
 
     console.log(
-      boxen(lines.join('\n'), {
+      boxen(metaLines.join('\n'), {
         borderStyle: 'round',
-        borderColor: noisyShare >= 0.3 ? 'red' : noisyShare >= 0.15 ? 'yellow' : 'gray',
+        borderColor: noisyShare >= 0.3 ? 'red' : noisyShare >= 0.15 ? 'yellow' : 'green',
         title: ' Context Noise ',
         titleAlignment: 'left',
         padding: { top: 0, right: 1, bottom: 0, left: 1 },
@@ -1299,98 +1357,94 @@ export class CommandHandler {
     );
 
     console.log('');
-    console.log(chalk.bold('  Context Anatomy'));
-    if (analysis.buckets.length === 0) {
-      console.log(chalk.dim('  - (no analyzable context items found)'));
+    console.log(chalk.bold('  Noise Categories'));
+    analysis.categories.forEach((category) => {
+      const colorize = this.getNoiseCategoryColor(category.key);
+      const bar = this.renderPercentBar(Math.min(100, category.shareOfThreshold * 100), colorize);
+      const header = `${category.tool} | ${category.label}`.padEnd(22, ' ');
+      const countText = `${category.callCount}x`.padStart(5, ' ');
+      const tokenText = `${this.formatTokenNumber(category.tokens)} tok`.padStart(12, ' ');
+      console.log(`  ${colorize(header)} ${bar} ${countText} ${tokenText}`);
+    });
+
+    console.log('');
+    console.log(chalk.bold(`  Recent Noise Events (${Math.min(8, analysis.events.length)})`));
+    if (analysis.events.length === 0) {
+      console.log(chalk.green('  - No obvious noise events were detected in the scanned sessions.'));
     } else {
-      analysis.buckets.slice(0, 8).forEach((bucket) => {
-        const bar = this.renderPercentBar(bucket.share * 100, chalk.blue);
+      analysis.events.slice(0, 8).forEach((event) => {
+        const tagText = this.renderNoiseTag(event.tag);
+        const target = this.truncateBlockName(event.target || '(unknown target)', 48).padEnd(48, ' ');
+        const tokenText = `${this.formatTokenNumber(event.tokens)} tok`.padStart(10, ' ');
+        console.log(`  ${chalk.dim(`[${event.timestampLabel}]`)} ${event.tool.padEnd(4, ' ')} ${target} ${tokenText}  ${tagText}`);
+        console.log(chalk.dim(`      ${event.reason}`));
+      });
+    }
+
+    console.log('');
+    console.log(chalk.bold('  File Read Hotspot'));
+    if (analysis.fileHotspots.length === 0) {
+      console.log(chalk.dim('  - No Read tool activity was detected.'));
+    } else {
+      analysis.fileHotspots.slice(0, 8).forEach((hotspot) => {
+        const heat =
+          hotspot.heat === 'high'
+            ? chalk.red('hot')
+            : hotspot.heat === 'medium'
+            ? chalk.yellow('warm')
+            : chalk.gray('cool');
         console.log(
-          `  ${bucket.label.padEnd(18, ' ')} ${this.formatTokenNumber(bucket.tokenCount).padStart(8, ' ')} tok  ${String(
-            Math.round(bucket.share * 100)
-          ).padStart(3, ' ')}%  ${bar}`
+          `  ${this.truncateBlockName(hotspot.path, 48).padEnd(48, ' ')} ${String(hotspot.totalReads).padStart(4, ' ')} reads ${String(
+            hotspot.uniqueReads
+          ).padStart(4, ' ')} unique ${String(hotspot.dupReads).padStart(4, ' ')} dup ${this.formatTokenNumber(
+            hotspot.tokensConsumed
+          ).padStart(8, ' ')} tok  ${heat}`
         );
       });
     }
 
     console.log('');
-    console.log(chalk.bold('  Prompt/Skill Coverage'));
+    console.log(chalk.bold('  Prompt Asset Signals'));
     console.log(
       chalk.dim(
         `  scanned prompt files ${coverage.scannedPromptFiles}, scanned skills ${coverage.scannedSkills}, matched reads ${coverage.matchedReadCount}`
       )
     );
-
-    if (coverage.readAssets.length === 0) {
-      console.log(chalk.yellow('  - No prompt/skill markdown assets were read in the scanned sessions.'));
+    if (coverage.signals.length === 0) {
+      console.log(chalk.dim('  - No prompt-asset signals were extracted.'));
     } else {
-      console.log(chalk.green(`  Read Assets (${coverage.readAssets.length})`));
-      coverage.readAssets.slice(0, 8).forEach((asset) => {
-        const status = asset.wasReferencedLater ? chalk.green('used') : chalk.yellow('read-only');
-        const headingSuffix = asset.headings.length > 0 ? ` | sections: ${asset.headings.join(', ')}` : '';
+      coverage.signals.slice(0, 8).forEach((signal) => {
+        const tone =
+          signal.kind === 'high_value'
+            ? chalk.green
+            : signal.kind === 'read_only'
+            ? chalk.yellow
+            : chalk.gray;
+        const label =
+          signal.kind === 'high_value'
+            ? 'used'
+            : signal.kind === 'read_only'
+            ? 'read-only'
+            : 'unused';
+        const asset = signal.asset;
+        const tokenCount = signal.kind === 'unused' ? asset.tokenCount : asset.readTokens;
         console.log(
-          `  ${this.truncateBlockName(asset.relativePath, 44).padEnd(44, ' ')} ${this.formatTokenNumber(
-            asset.readTokens
-          ).padStart(8, ' ')} tok  ${status}`
-        );
-        console.log(chalk.dim(`      got: ${asset.summary || '(no clear summary extracted)'}${headingSuffix}`));
-      });
-    }
-
-    if (coverage.unreadAssets.length === 0) {
-      console.log(chalk.green('  All scanned prompt/skill assets were touched at least once.'));
-    } else {
-      console.log('');
-      console.log(chalk.yellow(`  Unread Assets (${coverage.unreadAssets.length})`));
-      coverage.unreadAssets.slice(0, 8).forEach((asset) => {
-        const headingSuffix = asset.headings.length > 0 ? ` | sections: ${asset.headings.join(', ')}` : '';
-        console.log(
-          `  ${this.truncateBlockName(asset.relativePath, 44).padEnd(44, ' ')} ${this.formatTokenNumber(
-            asset.tokenCount
-          ).padStart(8, ' ')} tok  ${chalk.yellow('unread')}`
-        );
-        console.log(chalk.dim(`      missing: ${asset.summary || '(summary unavailable)'}${headingSuffix}`));
-      });
-    }
-
-    console.log('');
-    console.log(chalk.bold(`  Delete Candidates (Context Assets: ${assetSignals.length})`));
-    if (assetSignals.length === 0) {
-      console.log(chalk.green('  - No obvious context-asset noise signals were detected.'));
-    } else {
-      assetSignals.slice(0, 10).forEach((signal) => {
-        const severityText =
-          signal.severity === 'high'
-            ? chalk.red(signal.severity.toUpperCase())
-            : signal.severity === 'medium'
-            ? chalk.yellow(signal.severity.toUpperCase())
-            : chalk.gray(signal.severity.toUpperCase());
-        console.log(
-          `  [${signal.rule}] ${chalk.red('DELETE')} ${this.truncateBlockName(signal.target, 40).padEnd(40, ' ')} ${this.formatTokenNumber(
-            signal.wastedTokens
-          ).padStart(8, ' ')} tok  ${severityText}`
-        );
-        console.log(chalk.dim(`      ${signal.reason}`));
-        console.log(chalk.dim(`      ${signal.recommendation}`));
-      });
-    }
-
-    console.log('');
-    console.log(chalk.bold(`  Keep Candidates (Context Assets: ${assetKeepCandidates.length})`));
-    if (assetKeepCandidates.length === 0) {
-      console.log(chalk.dim('  - No strong keep signals were extracted for prompt/skill assets.'));
-    } else {
-      assetKeepCandidates.slice(0, 6).forEach((candidate) => {
-        console.log(
-          `  ${chalk.green('KEEP')} ${this.truncateBlockName(candidate.target, 44).padEnd(44, ' ')} ${this.formatTokenNumber(
-            candidate.tokenCount
+          `  ${tone(label.padEnd(9, ' '))} ${this.truncateBlockName(asset.relativePath, 46).padEnd(46, ' ')} ${this.formatTokenNumber(
+            tokenCount
           ).padStart(8, ' ')} tok`
         );
-        console.log(chalk.dim(`      ${candidate.reason}`));
+        console.log(chalk.dim(`      ${signal.reason}`));
       });
     }
 
-    const recommendations = this.buildContextNoiseRecommendations(analysis, coverage, assetSignals);
+    console.log('');
+    const footerText =
+      noisyShare >= 0.3
+        ? chalk.yellow(`  ! high noise | ${this.formatTokenNumber(analysis.totalNoiseTokens)} tok recoverable`)
+        : chalk.green('  OK noise within acceptable range');
+    console.log(footerText);
+
+    const recommendations = this.buildContextNoiseRecommendations(analysis, coverage);
     if (recommendations.length > 0) {
       console.log('');
       console.log(chalk.bold('  Recommendations'));
@@ -1408,43 +1462,42 @@ export class CommandHandler {
     }
   }
 
-  private buildContextNoiseRecommendations(
-    analysis: ContextNoiseAnalysis,
-    coverage: PromptCoverageSummary,
-    assetSignals: ContextNoiseAnalysis['signals']
-  ): string[] {
+  private buildContextNoiseRecommendations(analysis: ContextNoiseAnalysis, coverage: PromptCoverageSummary): string[] {
     const recommendations: string[] = [];
-    const topBucket = analysis.buckets[0];
-    const topSignal = assetSignals[0];
+    const topCategory = analysis.categories[0];
+    const topEvent = analysis.events[0];
     const noisyShare = analysis.totalEstimatedTokens > 0 ? analysis.totalNoiseTokens / analysis.totalEstimatedTokens : 0;
 
     if (noisyShare >= 0.3) {
-      recommendations.push(chalk.red('Noise occupies a large share of context. Trim the biggest delete candidates before the next long turn.'));
+      recommendations.push(chalk.red('Recoverable noise is already high. Trim the biggest duplicate reads and repeated commands before the next long turn.'));
     } else if (noisyShare >= 0.15) {
-      recommendations.push(chalk.yellow('Context quality is drifting. Prune the top noisy items so the active task stays salient.'));
+      recommendations.push(chalk.yellow('Context quality is starting to drift. Prune repeated scans and read-only assets first.'));
     } else {
-      recommendations.push(chalk.green('Noise is currently manageable. Focus on preventing repeat scans and duplicate reads.'));
+      recommendations.push(chalk.green('Noise is still manageable. Focus on preventing repeat reads, repeated Bash runs, and empty searches.'));
     }
 
-    if (topBucket && topBucket.key === 'file_read') {
-      recommendations.push(chalk.yellow('File reads dominate the window. Prefer narrower excerpts over whole-file reads when possible.'));
-    } else if (topBucket && topBucket.key === 'directory_listing') {
-      recommendations.push(chalk.yellow('Directory listings dominate the window. Replace broad scans with targeted path queries.'));
+    if (topCategory?.key === 'read_dup' || topCategory?.key === 'ctx_stale') {
+      recommendations.push(chalk.yellow('Read-related noise dominates. Add a "summarize first, then read line ranges" rule to CLAUDE.md and reuse the latest valid read.'));
+    } else if (topCategory?.key === 'bash_dup') {
+      recommendations.push(chalk.yellow('Repeated Bash runs are expensive. Check whether the same command output is already in context before rerunning it.'));
+    } else if (topCategory?.key === 'grep_miss') {
+      recommendations.push(chalk.yellow('Grep misses are frequent. Confirm the path scope first, then narrow the pattern to avoid repeated empty searches.'));
+    } else if (topCategory?.key === 'ls_redundant') {
+      recommendations.push(chalk.yellow('Directory scans dominate. Start from narrower target folders instead of broad scans from the project root.'));
     }
 
-    if (topSignal?.rule === 'N1') {
-      recommendations.push(chalk.red('The largest waste is duplicate file reads. Reuse the last good read unless the file changed.'));
-    } else if (topSignal?.rule === 'N3') {
-      recommendations.push(chalk.red('The largest waste is broad project scanning. Start from a narrower directory or specific files.'));
-    } else if (topSignal?.rule === 'N5') {
-      recommendations.push(chalk.red('Large reads are entering context without paying off. Swap them for summaries or line-level excerpts.'));
+    if (topEvent?.tag === 'bloat') {
+      recommendations.push(chalk.red('Large but unused context is showing up in recent events. Replace whole-file reads or big outputs with summaries and excerpts.'));
     }
 
     if (coverage.readAssets.length === 0 && coverage.scannedAssets > 0) {
-      recommendations.push(chalk.yellow('The scanned session did not explicitly read any prompt/skill assets. If Claude should have used them, make the retrieval step explicit.'));
+      recommendations.push(chalk.yellow('No prompt or skill assets were explicitly read. If they should shape behavior, make the retrieval step explicit.'));
+    }
+    if (coverage.promptNoiseTokens > 0) {
+      recommendations.push(chalk.yellow('Some prompt assets were read but never reused. Separate always-on rules from on-demand assets.'));
     }
     if (coverage.unreadAssets.length > 0) {
-      recommendations.push(chalk.yellow('Unread prompt/skill assets exist in the project. Decide which of them are intended context and which should stay out of the window.'));
+      recommendations.push(chalk.yellow('Large unread assets still exist in the repo. Decide which ones belong in default context and which should stay outside the window.'));
     }
 
     return Array.from(new Set(recommendations)).slice(0, 4);
@@ -1460,7 +1513,7 @@ export class CommandHandler {
 
   private summarizeToolReadContent(content: string, filePath: string): { summary: string; headings: string[] } {
     const cleaned = content
-      .replace(/^\s*\d+→/gm, '')
+      .replace(/^\s*\d+\s*(?:[:>|-]\s*)?/gm, '')
       .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
       .replace(/\r\n/g, '\n')
       .trim();
@@ -1618,6 +1671,32 @@ export class CommandHandler {
       return chalk.green;
     }
     return chalk.gray;
+  }
+
+  private getNoiseCategoryColor(key: string): (value: string) => string {
+    if (key === 'read_dup' || key === 'write_noop') {
+      return chalk.red;
+    }
+    if (key === 'bash_dup' || key === 'grep_miss') {
+      return chalk.yellow;
+    }
+    if (key === 'ctx_stale') {
+      return chalk.blue;
+    }
+    return chalk.gray;
+  }
+
+  private renderNoiseTag(tag: 'dup' | 'miss' | 'stale' | 'bloat'): string {
+    if (tag === 'dup') {
+      return chalk.red('[dup]');
+    }
+    if (tag === 'miss') {
+      return chalk.yellow('[miss]');
+    }
+    if (tag === 'stale') {
+      return chalk.blue('[stale]');
+    }
+    return chalk.yellow('[bloat]');
   }
 
   private renderPercentBar(percent: number, colorize: (value: string) => string): string {

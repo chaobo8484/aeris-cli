@@ -44,11 +44,11 @@ const DEFAULT_CONFIG: AppConfig = {
 
 export class ConfigStore {
   private readonly configPath: string;
-  private readonly appName = 'aeris-cli';
+  private readonly appName = 'odradek-cli';
   private readonly sessionProviderOverrides: Partial<Record<ProviderName, ProviderConfig>> = {};
 
   constructor() {
-    this.configPath = this.resolveConfigPath();
+    this.configPath = this.resolveConfigPath(this.appName);
   }
 
   async getConfig(): Promise<AppConfig> {
@@ -61,14 +61,13 @@ export class ConfigStore {
     await this.ensureConfigDir();
     try {
       const raw = await fs.readFile(this.configPath, 'utf8');
-      const parsed = JSON.parse(raw) as AppConfig;
+      const parsed = JSON.parse(this.stripUtf8Bom(raw)) as AppConfig;
+      const parsedProviders = this.normalizeStoredProviders(parsed.providers);
       return {
         ...DEFAULT_CONFIG,
         ...parsed,
         activeProvider: isProviderName(parsed.activeProvider) ? parsed.activeProvider : DEFAULT_CONFIG.activeProvider,
-        providers: {
-          ...DEFAULT_CONFIG.providers,
-        },
+        providers: parsedProviders,
         trustedPaths: Array.isArray(parsed.trustedPaths) ? parsed.trustedPaths : [],
         projectContextEnabled:
           typeof parsed.projectContextEnabled === 'boolean'
@@ -82,10 +81,11 @@ export class ConfigStore {
 
   async getConfigDiagnostics(): Promise<ConfigDiagnostics> {
     const stored = await this.getStoredConfig();
-    const envProjectContextEnabled = this.readBooleanEnv(['AERIS_PROJECT_CONTEXT_ENABLED']);
+    const envProjectContextEnabled = this.readBooleanEnv(['ODRADEK_PROJECT_CONTEXT_ENABLED']);
     const envActiveProvider = this.readActiveProviderEnv();
 
     const providerSources = PROVIDER_NAMES.reduce<Record<ProviderName, ProviderConfigSources>>((acc, provider) => {
+      const storedProvider = stored.providers[provider] ?? {};
       const sessionProvider = this.getSessionProviderConfig(provider);
       const envProvider = this.getEnvironmentProviderConfig(provider);
 
@@ -94,17 +94,23 @@ export class ConfigStore {
           ? 'session'
           : envProvider.apiKey
             ? 'env'
-            : 'unset',
+            : storedProvider.apiKey?.trim()
+              ? 'local'
+              : 'unset',
         baseUrl: sessionProvider.baseUrl
           ? 'session'
           : envProvider.baseUrl
             ? 'env'
-            : 'default',
+            : storedProvider.baseUrl?.trim()
+              ? 'local'
+              : 'default',
         model: sessionProvider.model
           ? 'session'
           : envProvider.model
             ? 'env'
-            : 'default',
+            : storedProvider.model?.trim()
+              ? 'local'
+              : 'unset',
       };
 
       return acc;
@@ -229,7 +235,7 @@ export class ConfigStore {
       };
     }
 
-    const envProjectContextEnabled = this.readBooleanEnv(['AERIS_PROJECT_CONTEXT_ENABLED']);
+    const envProjectContextEnabled = this.readBooleanEnv(['ODRADEK_PROJECT_CONTEXT_ENABLED']);
     const envActiveProvider = this.readActiveProviderEnv();
 
     return {
@@ -269,12 +275,45 @@ export class ConfigStore {
   }
 
   private readActiveProviderEnv(): ProviderName | undefined {
-    const value = this.readStringEnv(['AERIS_ACTIVE_PROVIDER']);
+    const value = this.readStringEnv(['ODRADEK_ACTIVE_PROVIDER']);
     return isProviderName(value) ? value : undefined;
   }
 
   private getSessionProviderConfig(provider: ProviderName): ProviderConfig {
     return this.sessionProviderOverrides[provider] ?? {};
+  }
+
+  private normalizeStoredProviders(
+    providers: Partial<Record<ProviderName, ProviderConfig>> | undefined
+  ): Record<ProviderName, ProviderConfig> {
+    const normalized = { ...DEFAULT_CONFIG.providers };
+
+    for (const provider of PROVIDER_NAMES) {
+      normalized[provider] = this.normalizeProviderConfig(providers?.[provider]);
+    }
+
+    return normalized;
+  }
+
+  private normalizeProviderConfig(config: ProviderConfig | undefined): ProviderConfig {
+    if (!config) {
+      return {};
+    }
+
+    return {
+      ...(this.normalizeOptionalString(config.apiKey) ? { apiKey: this.normalizeOptionalString(config.apiKey) } : {}),
+      ...(this.normalizeOptionalString(config.baseUrl) ? { baseUrl: this.normalizeOptionalString(config.baseUrl) } : {}),
+      ...(this.normalizeOptionalString(config.model) ? { model: this.normalizeOptionalString(config.model) } : {}),
+    };
+  }
+
+  private normalizeOptionalString(value: string | undefined): string | undefined {
+    const normalized = value?.trim();
+    return normalized ? normalized : undefined;
+  }
+
+  private stripUtf8Bom(value: string): string {
+    return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
   }
 
   private readStringEnv(keys: string[]): string | undefined {
@@ -306,23 +345,23 @@ export class ConfigStore {
     return undefined;
   }
 
-  private resolveConfigPath(): string {
+  private resolveConfigPath(appName: string): string {
     const home = os.homedir();
     const platform = process.platform;
 
     if (platform === 'win32') {
       const appData = process.env.APPDATA;
       if (appData) {
-        return path.join(appData, this.appName, 'config.json');
+        return path.join(appData, appName, 'config.json');
       }
-      return path.join(home, 'AppData', 'Roaming', this.appName, 'config.json');
+      return path.join(home, 'AppData', 'Roaming', appName, 'config.json');
     }
 
     if (platform === 'darwin') {
-      return path.join(home, 'Library', 'Application Support', this.appName, 'config.json');
+      return path.join(home, 'Library', 'Application Support', appName, 'config.json');
     }
 
-    return path.join(home, '.config', this.appName, 'config.json');
+    return path.join(home, '.config', appName, 'config.json');
   }
 
   private normalizePath(value: string): string {

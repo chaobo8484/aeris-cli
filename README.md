@@ -1,6 +1,6 @@
-# Aeris
+# Odradek
 
-[![License](https://img.shields.io/github/license/chaobo8484/aeris-cli)](https://github.com/chaobo8484/aeris-cli/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/chaobo8484/odradek-cli)](https://github.com/chaobo8484/odradek-cli/blob/main/LICENSE)
 ![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?style=for-the-badge&logo=claude&logoColor=white)
@@ -55,21 +55,21 @@ Copy-Item .env.example .env
 Claude example:
 
 ```env
-AERIS_ACTIVE_PROVIDER=claude
-AERIS_CLAUDE_API_KEY=your_api_key
-AERIS_CLAUDE_BASE_URL=https://api.anthropic.com/v1
-AERIS_CLAUDE_MODEL=your_claude_model
-AERIS_PROJECT_CONTEXT_ENABLED=true
+ODRADEK_ACTIVE_PROVIDER=claude
+ODRADEK_CLAUDE_API_KEY=your_api_key
+ODRADEK_CLAUDE_BASE_URL=https://api.anthropic.com/v1
+ODRADEK_CLAUDE_MODEL=your_claude_model
+ODRADEK_PROJECT_CONTEXT_ENABLED=true
 ```
 
 OpenRouter example:
 
 ```env
-AERIS_ACTIVE_PROVIDER=openrouter
-AERIS_OPENROUTER_API_KEY=your_openrouter_api_key
-AERIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-AERIS_OPENROUTER_MODEL=provider/model-name
-AERIS_PROJECT_CONTEXT_ENABLED=true
+ODRADEK_ACTIVE_PROVIDER=openrouter
+ODRADEK_OPENROUTER_API_KEY=your_openrouter_api_key
+ODRADEK_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+ODRADEK_OPENROUTER_MODEL=provider/model-name
+ODRADEK_PROJECT_CONTEXT_ENABLED=true
 ```
 
 3. Start the app
@@ -83,7 +83,7 @@ Provider API settings come from `.env`. Inside the CLI, use `/provider` to switc
 **Windows config path:**
 
 ```text
-%APPDATA%/aeris-cli/config.json
+%APPDATA%/odradek-cli/config.json
 ```
 
 **Precedence (highest first):**
@@ -96,14 +96,14 @@ Provider API settings come from `.env`. Inside the CLI, use `/provider` to switc
 
 | Variable | Purpose |
 |----------|---------|
-| `AERIS_ACTIVE_PROVIDER` | Active runtime provider (`claude` or `openrouter`) |
-| `AERIS_CLAUDE_API_KEY` | Claude API key |
-| `AERIS_CLAUDE_BASE_URL` | API base URL |
-| `AERIS_CLAUDE_MODEL` | Model name |
-| `AERIS_OPENROUTER_API_KEY` | OpenRouter API key |
-| `AERIS_OPENROUTER_BASE_URL` | OpenRouter API base URL |
-| `AERIS_OPENROUTER_MODEL` | OpenRouter default model |
-| `AERIS_PROJECT_CONTEXT_ENABLED` | Toggle project context |
+| `ODRADEK_ACTIVE_PROVIDER` | Active runtime provider (`claude` or `openrouter`) |
+| `ODRADEK_CLAUDE_API_KEY` | Claude API key |
+| `ODRADEK_CLAUDE_BASE_URL` | API base URL |
+| `ODRADEK_CLAUDE_MODEL` | Model name |
+| `ODRADEK_OPENROUTER_API_KEY` | OpenRouter API key |
+| `ODRADEK_OPENROUTER_BASE_URL` | OpenRouter API base URL |
+| `ODRADEK_OPENROUTER_MODEL` | OpenRouter default model |
+| `ODRADEK_PROJECT_CONTEXT_ENABLED` | Toggle project context |
 | `ANTHROPIC_API_KEY` | Anthropic-compatible key |
 | `ANTHROPIC_BASE_URL` | Anthropic-compatible base URL |
 | `OPENROUTER_API_KEY` | OpenRouter fallback key name |
@@ -116,7 +116,7 @@ npm run build  # production build
 npm start      # run built app
 ```
 
-On first launch, Aeris asks whether to trust the current working directory. After that, use `.env` for provider settings, `/provider` to switch the active provider, and `/model` to switch the current session model.
+On first launch, Odradek asks whether to trust the current working directory. After that, use `.env` for provider settings, `/provider` to switch the active provider, and `/model` to switch the current session model.
 
 ## CLI commands
 

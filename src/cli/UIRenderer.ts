@@ -31,10 +31,10 @@ export class UIRenderer {
   private renderMessage(message: Message): void {
     const roleLabel =
       message.role === 'assistant' && message.renderMetadata?.modelLabel?.trim()
-        ? `Aeris(${message.renderMetadata.modelLabel.trim()})`
+        ? `Odradek(${message.renderMetadata.modelLabel.trim()})`
         : message.role === 'user'
           ? 'You'
-          : 'Aeris';
+          : 'Odradek';
     const timestamp = this.formatTimestamp(message.timestamp);
     const meta = this.BORDER_COLOR(` - ${timestamp} - ${message.id}`);
 

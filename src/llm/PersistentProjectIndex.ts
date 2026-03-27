@@ -103,7 +103,7 @@ type ScannedProjectFile = {
   mtimeMs: number;
 };
 
-const APP_NAME = 'aeris-cli';
+const APP_NAME = 'odradek-cli';
 const SNAPSHOT_VERSION = 1;
 const MAX_FILE_SIZE_BYTES = 512_000;
 const RUNTIME_CACHE_TTL_MS = 5_000;
@@ -1139,26 +1139,26 @@ export class PersistentProjectIndex {
     await fs.writeFile(cachePath, JSON.stringify(snapshot, null, 2), 'utf8');
   }
 
-  private resolveCachePath(rootPath: string): string {
+  private resolveCachePath(rootPath: string, appName: string = APP_NAME): string {
     const hashedRoot = crypto.createHash('sha1').update(rootPath).digest('hex').slice(0, 16);
     const baseName = path.basename(rootPath).replace(/[^a-z0-9_-]+/gi, '_') || 'project';
-    return path.join(this.getStorageDir(), 'project-indexes', `${baseName}-${hashedRoot}.json`);
+    return path.join(this.getStorageDir(appName), 'project-indexes', `${baseName}-${hashedRoot}.json`);
   }
 
-  private getStorageDir(): string {
+  private getStorageDir(appName: string = APP_NAME): string {
     const home = os.homedir();
     if (process.platform === 'win32') {
       const appData = process.env.APPDATA;
       if (appData) {
-        return path.join(appData, APP_NAME);
+        return path.join(appData, appName);
       }
-      return path.join(home, 'AppData', 'Roaming', APP_NAME);
+      return path.join(home, 'AppData', 'Roaming', appName);
     }
 
     if (process.platform === 'darwin') {
-      return path.join(home, 'Library', 'Application Support', APP_NAME);
+      return path.join(home, 'Library', 'Application Support', appName);
     }
 
-    return path.join(home, '.config', APP_NAME);
+    return path.join(home, '.config', appName);
   }
 }

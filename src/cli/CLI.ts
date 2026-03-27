@@ -1,6 +1,8 @@
 ﻿import readline from 'readline';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
+import { render } from 'ink';
+import { createElement } from 'react';
 import { ConversationManager } from './ConversationManager.js';
 import { CommandHandler } from './CommandHandler.js';
 import { UIRenderer } from './UIRenderer.js';
@@ -12,6 +14,7 @@ import { getProviderMeta, ProviderName, PROVIDER_NAMES } from '../config/provide
 import { LLMClient } from '../llm/LLMClient.js';
 import { createDefaultAdapters } from '../llm/adapters/createDefaultAdapters.js';
 import { LLMAdapter } from '../llm/adapters/types.js';
+import { TrustDecision, TrustPrompt } from './ink/TrustPrompt.js';
 
 export class CLI {
   private rl: readline.Interface;
@@ -150,7 +153,7 @@ export class CLI {
     this.lastInlineSuggestionQuery = '';
     this.promptVisibleLines = 0;
     console.log('');
-    console.log(chalk.bold('  Aeris'));
+    console.log(chalk.bold('  Odradek'));
     console.log(chalk.dim('  Internal Build: v0.0.3_0'));
     console.log('');
     await this.renderHomeConfigStatus();
@@ -247,22 +250,8 @@ export class CLI {
       return false;
     }
 
-    this.renderWorkspaceTrustPrompt(currentPath);
-
     try {
-      const { decision } = await inquirer.prompt<{ decision: 'trust' | 'exit' }>([
-        {
-          type: 'list',
-          name: 'decision',
-          message: 'Select an option',
-          choices: [
-            { name: 'Yes, I trust this folder', value: 'trust' },
-            { name: 'No, exit', value: 'exit' },
-          ],
-          default: 'trust',
-          pageSize: 2,
-        },
-      ]);
+      const decision = await this.renderWorkspaceTrustPrompt(currentPath);
 
       if (decision === 'trust') {
         await this.configStore.trustPath(currentPath);
@@ -281,23 +270,23 @@ export class CLI {
     }
   }
 
-  private renderWorkspaceTrustPrompt(currentPath: string): void {
-    const divider = chalk.yellow(this.getPromptDivider());
-    console.log(divider);
-    console.log(chalk.yellow.bold('Accessing workspace:'));
-    console.log('');
-    console.log(chalk.white(currentPath));
-    console.log('');
-    console.log(
-      chalk.gray(
-        "Quick safety check: Is this a project you created or one you trust? If not, review this folder before continuing."
-      )
-    );
-    console.log('');
-    console.log(chalk.gray("Aeris will be able to read, edit, and execute files here."));
-    console.log('');
-    console.log(chalk.gray('Security guide'));
-    console.log('');
+  private async renderWorkspaceTrustPrompt(currentPath: string): Promise<TrustDecision> {
+    return new Promise<TrustDecision>((resolve) => {
+      let settled = false;
+
+      const handleDecision = (decision: TrustDecision) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(decision);
+      };
+
+      render(createElement(TrustPrompt, { currentPath, onDecision: handleDecision }), {
+        exitOnCtrlC: false,
+        patchConsole: false,
+      });
+    });
   }
 
   private async renderHomeTrustStatus(): Promise<void> {
@@ -1006,7 +995,7 @@ export class CLI {
 
     if (diagnostics.activeProviderSource === 'env') {
       console.log(chalk.yellow('  Environment override active: ') + chalk.white('Active Provider'));
-      console.log(chalk.dim('  Runtime active provider is currently controlled by AERIS_ACTIVE_PROVIDER'));
+      console.log(chalk.dim('  Runtime active provider is currently controlled by ODRADEK_ACTIVE_PROVIDER'));
     }
 
     if (envOverrides.length > 0 || diagnostics.projectContextEnabledSource === 'env') {

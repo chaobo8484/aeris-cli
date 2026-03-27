@@ -6,5 +6,4 @@ dist/
 .env.*.local
 *.tgz
 .DS_Store
-
 docs/

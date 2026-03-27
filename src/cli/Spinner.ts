@@ -5,15 +5,17 @@ export class Spinner {
   private currentFrame = 0;
   private interval: NodeJS.Timeout | null = null;
   private message = '';
+  private startedAt = 0;
 
   start(message: string): void {
     this.message = message;
     this.currentFrame = 0;
+    this.startedAt = Date.now();
+
+    this.render();
 
     this.interval = setInterval(() => {
-      process.stdout.write(
-        '\r' + chalk.dim('  | ') + chalk.cyan(this.frames[this.currentFrame]) + ' ' + chalk.gray(this.message)
-      );
+      this.render();
       this.currentFrame = (this.currentFrame + 1) % this.frames.length;
     }, 80);
   }
@@ -39,5 +41,28 @@ export class Spinner {
 
     process.stdout.write('\r\x1b[K');
     console.log(chalk.dim('  | ') + chalk.red('x') + ' ' + chalk.red(errorMessage));
+  }
+
+  private render(): void {
+    const elapsed = this.formatElapsed(Date.now() - this.startedAt);
+    process.stdout.write(
+      '\r' +
+        chalk.dim('  | ') +
+        chalk.cyan(this.frames[this.currentFrame]) +
+        ' ' +
+        chalk.gray(`${this.message} (${elapsed})`)
+    );
+  }
+
+  private formatElapsed(elapsedMs: number): string {
+    const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    if (minutes === 0) {
+      return `${seconds}s`;
+    }
+
+    return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
   }
 }

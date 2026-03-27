@@ -345,11 +345,11 @@ export class ClaudeTokenizer {
     const model = providerConfig.model?.trim();
 
     if (!apiKey) {
-      throw new Error('Claude API key is missing. Set AERIS_CLAUDE_API_KEY in .env before scanning tokens.');
+      throw new Error('Claude API key is missing. Set ODRADEK_CLAUDE_API_KEY in .env before scanning tokens.');
     }
 
     if (!model) {
-      throw new Error('Claude model is missing. Set AERIS_CLAUDE_MODEL in .env or use /model <model-name> before scanning tokens.');
+      throw new Error('Claude model is missing. Set ODRADEK_CLAUDE_MODEL in .env or use /model <model-name> before scanning tokens.');
     }
 
     return {

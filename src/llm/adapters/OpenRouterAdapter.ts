@@ -101,7 +101,7 @@ export class OpenRouterAdapter implements LLMAdapter {
     return {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
-      'x-title': 'Aeris CLI',
+      'x-title': 'Odradek CLI',
     };
   }
 

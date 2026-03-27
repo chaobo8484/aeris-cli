@@ -4,6 +4,7 @@
     "module": "Node16",
     "lib": ["ES2022"],
     "moduleResolution": "node16",
+    "jsx": "react-jsx",
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
