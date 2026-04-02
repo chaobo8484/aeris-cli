@@ -39,17 +39,6 @@ Odradek is a CLI tool for **diagnosing and enhancing Claude Code, Codex, and sim
 | **Project Context Injection** | Intelligently index workspace files and dynamically inject relevant context based on LLM queries |
 | **JSON Diagnostic Export** | Export diagnostic data (noise_eval / context_health / scan_tokens) to JSON for secondary analysis |
 
-## What "Codex Support" Means
-
-This project supports Codex in the diagnostic layer:
-
-- Runtime chat providers: `claude`, `openrouter`, `qwen`
-- Diagnostic session sources: `claude`, `codex`
-- Codex session data: reads rollout JSONL under `~/.codex/sessions`
-- Workspace awareness: `/state` can detect whether the current repo contains a `.codex` directory
-
-In other words, Odradek can analyze Codex sessions today, even though Codex is not yet a live chat provider inside the CLI.
-
 ## Preview
 
 <div align="center">

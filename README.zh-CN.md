@@ -1,6 +1,6 @@
 <div align="center">
 
-#
+# Odradek
 <img src="images/odradek.jpg" alt="Odradek Logo" width="75%"/>
 
 [![License](https://img.shields.io/github/license/chaobo8484/odradek-cli)](https://github.com/chaobo8484/odradek-cli/blob/main/LICENSE)
